@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any, Protocol
 
 from .catalog_seed import CATALOG_SEED
+from .escalation_cases import funnel_snapshot_has_value
 from .faq_content import build_delivery_faq_answer, resolve_brand_city
+from .funnel import WIZARD_STAGES
+from .managers_config import DEFAULT_MANAGERS_CONFIG, ManagersConfig
 
 
 def _seed_catalog_items() -> list[dict[str, Any]]:
@@ -61,6 +64,36 @@ class StorageBackend(Protocol):
     def admin_list_orders(self, limit: int = 10) -> list[dict[str, Any]]: ...
     def admin_get_order(self, order_id: int) -> dict[str, Any] | None: ...
     def admin_list_order_dialogs(self, order_id: int, limit: int = 30) -> list[dict[str, Any]]: ...
+    def get_timezone(self) -> str: ...
+    def get_brand_name(self) -> str: ...
+    def get_managers_config(self) -> ManagersConfig: ...
+    def list_stale_funnel_sessions(self, *, timeout_minutes: int) -> list[dict[str, Any]]: ...
+    def mark_funnel_abandoned_escalated(self, user_id: int) -> None: ...
+    def record_escalation_case(
+        self,
+        *,
+        user_id: int,
+        kind: str,
+        reasons: list[str],
+        summary: str,
+        funnel_snapshot: dict[str, Any] | None = None,
+        order_id: int | None = None,
+        manager_id: str | None = None,
+        manager_name: str | None = None,
+        phone: str | None = None,
+        full_name: str | None = None,
+        username: str | None = None,
+        notified: bool = False,
+    ) -> int: ...
+    def admin_list_escalation_cases(
+        self,
+        *,
+        query: str = "",
+        kind: str = "",
+        has_order: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+    def admin_get_escalation_case(self, case_id: int) -> dict[str, Any] | None: ...
 
 
 @dataclass
@@ -89,6 +122,12 @@ class InMemoryStorage:
             "договор": True,
             "замер": True,
             "замерщик": True,
+            "заказать": True,
+            "рассчитать точно": True,
+            "оплатить": True,
+            "брак": True,
+            "вернуть деньги": True,
+            "директор": True,
         }
     )
     pricing_reference: dict[str, Any] = field(
@@ -122,6 +161,11 @@ class InMemoryStorage:
     _next_order_id: int = 1
     brand_city: str = "Иркутск"
     timezone: str = "Asia/Irkutsk"
+    brand_name: str = "АртКухня"
+    managers_config: ManagersConfig = field(default_factory=lambda: DEFAULT_MANAGERS_CONFIG)
+    funnel_watch: dict[int, dict[str, Any]] = field(default_factory=dict)
+    escalation_cases: list[dict[str, Any]] = field(default_factory=list)
+    _next_escalation_id: int = 1
 
     def add_event(self, user_id: int, event_type: str, payload: dict[str, Any]) -> None:
         event = {
@@ -233,9 +277,22 @@ class InMemoryStorage:
     def set_funnel_state(self, user_id: int, state: dict[str, Any]) -> None:
         self.funnel_states[user_id] = dict(state)
         self.add_event(user_id, "funnel_state", state)
+        stage = str(state.get("stage") or "idle")
+        if stage in WIZARD_STAGES and stage != "done" and funnel_snapshot_has_value(state):
+            self.funnel_watch[user_id] = {
+                "user_id": user_id,
+                "stage": stage,
+                "state_json": dict(state),
+                "updated_at": datetime.now(timezone.utc),
+                "full_name": None,
+                "username": None,
+            }
+        else:
+            self.funnel_watch.pop(user_id, None)
 
     def clear_funnel_state(self, user_id: int) -> None:
         self.funnel_states.pop(user_id, None)
+        self.funnel_watch.pop(user_id, None)
         self.add_event(user_id, "funnel_state", {})
 
     def list_catalog(self, category: str) -> list[dict[str, Any]]:
@@ -301,3 +358,103 @@ class InMemoryStorage:
             for req in self.requests.get(user_id, [])
         ]
         return dialogs[-limit:]
+
+    def get_timezone(self) -> str:
+        return self.timezone
+
+    def get_brand_name(self) -> str:
+        return self.brand_name
+
+    def get_managers_config(self) -> ManagersConfig:
+        return self.managers_config
+
+    def list_stale_funnel_sessions(self, *, timeout_minutes: int) -> list[dict[str, Any]]:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+        result: list[dict[str, Any]] = []
+        for user_id, row in self.funnel_watch.items():
+            updated = row.get("updated_at")
+            if row.get("abandoned_escalated_at"):
+                continue
+            if isinstance(updated, str):
+                updated_dt = datetime.fromisoformat(updated)
+            else:
+                updated_dt = updated
+            if updated_dt <= cutoff:
+                result.append(dict(row))
+        return result
+
+    def mark_funnel_abandoned_escalated(self, user_id: int) -> None:
+        if user_id in self.funnel_watch:
+            self.funnel_watch[user_id]["abandoned_escalated_at"] = datetime.now(timezone.utc).isoformat()
+
+    def record_escalation_case(
+        self,
+        *,
+        user_id: int,
+        kind: str,
+        reasons: list[str],
+        summary: str,
+        funnel_snapshot: dict[str, Any] | None = None,
+        order_id: int | None = None,
+        manager_id: str | None = None,
+        manager_name: str | None = None,
+        phone: str | None = None,
+        full_name: str | None = None,
+        username: str | None = None,
+        notified: bool = False,
+    ) -> int:
+        case_id = self._next_escalation_id
+        self._next_escalation_id += 1
+        self.escalation_cases.append(
+            {
+                "id": case_id,
+                "user_id": user_id,
+                "kind": kind,
+                "reasons": reasons,
+                "summary": summary,
+                "funnel_snapshot": funnel_snapshot or {},
+                "order_id": order_id,
+                "manager_id": manager_id,
+                "manager_name": manager_name,
+                "phone": phone,
+                "full_name": full_name,
+                "username": username,
+                "status": "linked_order" if order_id else "new",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "notified_at": datetime.now(timezone.utc).isoformat() if notified else None,
+            }
+        )
+        return case_id
+
+    def admin_list_escalation_cases(
+        self,
+        *,
+        query: str = "",
+        kind: str = "",
+        has_order: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        items = list(self.escalation_cases)
+        if kind:
+            items = [item for item in items if item.get("kind") == kind]
+        if has_order == "yes":
+            items = [item for item in items if item.get("order_id")]
+        elif has_order == "no":
+            items = [item for item in items if not item.get("order_id")]
+        if query.strip():
+            q = query.strip().lower()
+            items = [
+                item
+                for item in items
+                if q in str(item.get("summary", "")).lower()
+                or q in str(item.get("phone", "")).lower()
+                or q in str(item.get("user_id", ""))
+            ]
+        items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return items[:limit]
+
+    def admin_get_escalation_case(self, case_id: int) -> dict[str, Any] | None:
+        for item in self.escalation_cases:
+            if int(item.get("id", 0)) == case_id:
+                return dict(item)
+        return None

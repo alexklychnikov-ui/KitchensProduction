@@ -2,6 +2,7 @@ const state = {
   panel: "overview",
   pricingTab: "classes",
   catalogCategory: "style",
+  escLogFilter: "",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -50,6 +51,8 @@ function showPanel(name) {
   if (name === "pricing") loadPricing();
   if (name === "catalog") loadCatalog();
   if (name === "settings") loadSettings();
+  if (name === "managers") loadManagers();
+  if (name === "escalation-log") loadEscalationLog();
 }
 
 function openModal(title, fields, onSubmit) {
@@ -93,7 +96,9 @@ async function loadSummary() {
     <div class="stat-card"><div class="stat-value">${data.new_orders ?? 0}</div><div class="stat-label">Заявки 24ч</div></div>
     <div class="stat-card"><div class="stat-value">${data.orders_count ?? 0}</div><div class="stat-label">Всего заявок</div></div>
     <div class="stat-card"><div class="stat-value">${data.activity}</div><div class="stat-label">Сообщения</div></div>
-    <div class="stat-card"><div class="stat-value">${data.catalog_count}</div><div class="stat-label">Каталог</div></div>
+    <div class="stat-card"><div class="stat-value">${data.escalation_cases_24h ?? 0}</div><div class="stat-label">Эскалации 24ч</div></div>
+    <div class="stat-card"><div class="stat-value">${data.escalation_with_order ?? 0}</div><div class="stat-label">С заказом</div></div>
+    <div class="stat-card"><div class="stat-value">${(data.escalation_cases_count ?? 0) - (data.escalation_with_order ?? 0)}</div><div class="stat-label">Без заказа</div></div>
   `;
 }
 
@@ -450,6 +455,12 @@ async function loadSettings() {
   $("#timezone-select").value = settings.timezone || "Asia/Irkutsk";
   $("#brand-name-input").value = settings.brand_name || "";
   $("#brand-city-input").value = settings.brand_city || "";
+  try {
+    const managers = await api("/api/managers");
+    $("#abandon-timeout-input").value = Math.max(10, managers.abandon_timeout_minutes ?? 10);
+  } catch {
+    $("#abandon-timeout-input").value = 10;
+  }
   const audit = await api("/api/audit?limit=30");
   $("#audit-list").innerHTML = audit
     .map(
@@ -460,6 +471,176 @@ async function loadSettings() {
       </div>`
     )
     .join("");
+}
+
+const ROUTE_LABELS = {
+  sales: "Продажи / заказы",
+  technical: "Техника / монтаж",
+  duty: "Жалобы / дежурный",
+};
+
+function renderManagerCard(manager, index) {
+  const routes = manager.routes || [];
+  const routeChecks = Object.entries(ROUTE_LABELS)
+    .map(
+      ([key, label]) => `
+      <label class="inline-check">
+        <input type="checkbox" data-route="${key}" data-index="${index}" ${routes.includes(key) ? "checked" : ""} />
+        ${label}
+      </label>`
+    )
+    .join("");
+  return `
+    <div class="card stack manager-card" data-manager-index="${index}">
+      <div class="item-title">${manager.name || "Менеджер"}</div>
+      <label><span>ID</span><input data-field="id" data-index="${index}" value="${manager.id || ""}" /></label>
+      <label><span>ФИО</span><input data-field="name" data-index="${index}" value="${manager.name || ""}" /></label>
+      <label><span>Краткое имя (в ответе бота)</span><input data-field="short_name" data-index="${index}" value="${manager.short_name || ""}" /></label>
+      <label><span>Роль</span><input data-field="role" data-index="${index}" value="${manager.role || ""}" /></label>
+      <label><span>Телефон</span><input data-field="phone" data-index="${index}" value="${manager.phone || ""}" /></label>
+      <label><span>Telegram</span><input data-field="telegram" data-index="${index}" value="${manager.telegram || ""}" placeholder="@username" /></label>
+      <label><span>Email</span><input data-field="email" data-index="${index}" value="${manager.email || ""}" /></label>
+      <label><span>График (подпись)</span><input data-field="schedule_label" data-index="${index}" value="${manager.schedule_label || ""}" /></label>
+      <div class="chip-row">${routeChecks}</div>
+    </div>`;
+}
+
+let managersState = null;
+
+async function loadManagers() {
+  managersState = await api("/api/managers");
+  const office = managersState.office_hours || {};
+  const monFri = office.mon_fri || { start: 9, end: 18 };
+  const sat = office.sat || { start: 9, end: 19 };
+  $("#office-mon-fri-start").value = monFri.start ?? 9;
+  $("#office-mon-fri-end").value = monFri.end ?? 18;
+  $("#office-sat-start").value = sat.start ?? 9;
+  $("#office-sat-end").value = sat.end ?? 19;
+  $("#sla-minutes-input").value = managersState.sla_minutes ?? 15;
+  const dutySelect = $("#duty-manager-select");
+  dutySelect.innerHTML = (managersState.managers || [])
+    .map((m) => `<option value="${m.id}">${m.short_name || m.name}</option>`)
+    .join("");
+  dutySelect.value = managersState.duty_manager_id || (managersState.managers?.[0]?.id || "");
+  $("#managers-list").innerHTML = (managersState.managers || [])
+    .map((manager, index) => renderManagerCard(manager, index))
+    .join("");
+  const style = managersState.style || {};
+  $("#style-sales").value = style.sales_handoff || "";
+  $("#style-technical").value = style.technical_handoff || "";
+  $("#style-complaint").value = style.complaint_handoff || "";
+  $("#style-uncertain").value = style.uncertain_handoff || "";
+}
+
+function collectManagersPayload() {
+  const cards = $$(".manager-card");
+  const managers = cards.map((card) => {
+    const index = card.dataset.managerIndex;
+    const read = (field) => card.querySelector(`[data-field="${field}"][data-index="${index}"]`)?.value?.trim() || "";
+    const routes = Array.from(card.querySelectorAll(`input[data-route][data-index="${index}"]:checked`)).map(
+      (el) => el.dataset.route
+    );
+    return {
+      id: read("id"),
+      name: read("name"),
+      short_name: read("short_name"),
+      role: read("role"),
+      phone: read("phone"),
+      telegram: read("telegram"),
+      email: read("email"),
+      schedule_label: read("schedule_label"),
+      routes: routes.length ? routes : ["sales"],
+    };
+  });
+  return {
+    office_hours: {
+      mon_fri: {
+        start: Number($("#office-mon-fri-start").value || 9),
+        end: Number($("#office-mon-fri-end").value || 18),
+      },
+      sat: {
+        start: Number($("#office-sat-start").value || 9),
+        end: Number($("#office-sat-end").value || 19),
+      },
+      sun: null,
+    },
+    duty_manager_id: $("#duty-manager-select").value,
+    sla_minutes: Number($("#sla-minutes-input").value || 15),
+    abandon_timeout_minutes: Math.max(10, Number($("#abandon-timeout-input")?.value || 10)),
+    managers,
+    style: {
+      greeting: managersState?.style?.greeting || "",
+      sales_handoff: $("#style-sales").value.trim(),
+      technical_handoff: $("#style-technical").value.trim(),
+      complaint_handoff: $("#style-complaint").value.trim(),
+      uncertain_handoff: $("#style-uncertain").value.trim(),
+    },
+  };
+}
+
+async function loadEscalationLog() {
+  const q = $("#esc-log-search").value.trim();
+  const filter = state.escLogFilter;
+  let kind = "";
+  let hasOrder = "";
+  if (filter === "order") hasOrder = "yes";
+  else if (filter === "no_order") hasOrder = "no";
+  else if (filter === "abandoned_funnel") kind = "abandoned_funnel";
+  const items = await api(
+    `/api/escalation-cases?q=${encodeURIComponent(q)}&kind=${encodeURIComponent(kind)}&has_order=${encodeURIComponent(hasOrder)}`
+  );
+  $("#esc-log-detail").classList.add("hidden");
+  $("#esc-log-list").innerHTML = items.length
+    ? items
+        .map(
+          (item) => `
+      <div class="item">
+        <div class="item-head">
+          <div>
+            <div class="item-title">#${item.id} · ${item.kind_label || item.kind}${item.order_id ? ` · заказ #${item.order_id}` : ""}</div>
+            <div class="item-meta">${fmtDt(item.created_at)} · ${item.full_name || "—"} · ${item.phone || "—"} · id ${item.user_id}</div>
+            <div class="item-meta">${(item.summary || "").slice(0, 120)}${(item.summary || "").length > 120 ? "…" : ""}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-esc-open="${item.id}">Открыть</button>
+        </div>
+      </div>`
+        )
+        .join("")
+    : `<div class="item"><div class="item-meta">Записей нет</div></div>`;
+  $$("[data-esc-open]").forEach((btn) => {
+    btn.onclick = () => openEscalationCase(Number(btn.dataset.escOpen));
+  });
+}
+
+async function openEscalationCase(caseId) {
+  const item = await api(`/api/escalation-cases/${caseId}`);
+  const snap = item.funnel_snapshot || {};
+  const snapLines = Object.entries(snap)
+    .filter(([, v]) => v != null && v !== "" && v !== false)
+    .map(([k, v]) => `<div>${k}: ${v}</div>`)
+    .join("");
+  $("#esc-log-detail").classList.remove("hidden");
+  $("#esc-log-detail").innerHTML = `
+    <h3>Эскалация #${item.id}</h3>
+    <div class="order-grid">
+      <div><span class="muted">Тип</span><div>${item.kind_label || item.kind}</div></div>
+      <div><span class="muted">Дата</span><div>${fmtDt(item.created_at)}</div></div>
+      <div><span class="muted">Менеджер</span><div>${item.manager_name || "—"}</div></div>
+      <div><span class="muted">Заказ</span><div>${item.order_id ? `#${item.order_id}` : "—"}</div></div>
+      <div><span class="muted">Клиент</span><div>${item.full_name || "—"} ${item.username || ""} · id ${item.user_id}</div></div>
+      <div><span class="muted">Телефон</span><div>${item.phone || "—"}</div></div>
+    </div>
+    <pre class="summary-pre">${item.summary || ""}</pre>
+    ${snapLines ? `<h4>Снимок воронки</h4><div class="stack small">${snapLines}</div>` : ""}
+    ${item.order_id ? `<button class="btn btn-ghost btn-sm" type="button" id="esc-open-order">Открыть заявку #${item.order_id}</button>` : ""}
+  `;
+  const orderBtn = $("#esc-open-order");
+  if (orderBtn) {
+    orderBtn.onclick = () => {
+      showPanel("orders");
+      openOrder(item.order_id);
+    };
+  }
 }
 
 function bindUi() {
@@ -477,6 +658,14 @@ function bindUi() {
   $("#faq-search").oninput = () => loadFaq();
   $("#orders-search").oninput = () => loadOrders();
   $("#esc-search").oninput = () => loadEscalation();
+  $("#esc-log-search").oninput = () => loadEscalationLog();
+  $("#esc-log-tabs").onclick = (e) => {
+    const tab = e.target.closest(".tab");
+    if (!tab) return;
+    state.escLogFilter = tab.dataset.filter || "";
+    $$("#esc-log-tabs .tab").forEach((t) => t.classList.toggle("active", t === tab));
+    loadEscalationLog();
+  };
   $("#pricing-search").oninput = () => loadPricing();
   $("#catalog-search").oninput = () => loadCatalog();
 
@@ -533,8 +722,29 @@ function bindUi() {
     for (const [key, value] of entries) {
       await api(`/api/settings/${key}`, { method: "PUT", body: JSON.stringify({ value }) });
     }
+    try {
+      const managers = await api("/api/managers");
+      managers.abandon_timeout_minutes = Math.max(10, Number($("#abandon-timeout-input").value || 10));
+      await api("/api/managers", { method: "PUT", body: JSON.stringify(managers) });
+      managersState = managers;
+    } catch {
+      toast("Настройки сохранены, но таймаут воронки не обновился");
+      loadSettings();
+      return;
+    }
     toast("Настройки сохранены");
     loadSettings();
+  };
+
+  $("#managers-save-btn").onclick = async () => {
+    try {
+      const payload = collectManagersPayload();
+      await api("/api/managers", { method: "PUT", body: JSON.stringify(payload) });
+      toast("Менеджеры сохранены");
+      loadManagers();
+    } catch (err) {
+      toast("Ошибка сохранения менеджеров");
+    }
   };
 
   $("#password-save-btn").onclick = async () => {

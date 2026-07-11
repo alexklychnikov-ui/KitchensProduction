@@ -159,6 +159,15 @@ textarea { min-height: 96px; resize: vertical; }
 .btn-sm { padding: 7px 10px; font-size: 0.85rem; }
 
 .stack { display: grid; gap: 10px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.inline-check { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; }
+.summary-pre {
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  background: rgba(0, 0, 0, 0.03);
+  padding: 10px;
+  border-radius: 8px;
+}
 .stack label span {
   display: block;
   margin-bottom: 4px;

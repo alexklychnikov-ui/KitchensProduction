@@ -9,6 +9,15 @@ import psycopg
 
 from .catalog_seed import CATALOG_SEED, CATALOG_TABLE_SQL, ORDERS_TABLE_SQL
 from .faq_content import build_delivery_faq_answer, resolve_brand_city
+from .escalation_cases import ESCALATION_CASES_SQL, funnel_snapshot_has_value, kind_from_reasons
+from .funnel import WIZARD_STAGES
+from .managers_config import (
+    DEFAULT_MANAGERS_CONFIG,
+    MANAGERS_CONFIG_KEY,
+    ManagersConfig,
+    parse_managers_config,
+    serialize_managers_config,
+)
 
 try:
     from src.catalog_media import catalog_media_path
@@ -97,7 +106,7 @@ CREATE TABLE IF NOT EXISTS config_change_log (
 CREATE INDEX IF NOT EXISTS idx_leads_status_created_at ON leads(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_dialogs_lead_created_at ON dialogs(lead_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_lead_created_at ON lead_events(lead_id, created_at);
-""" + CATALOG_TABLE_SQL + ORDERS_TABLE_SQL
+""" + CATALOG_TABLE_SQL + ORDERS_TABLE_SQL + ESCALATION_CASES_SQL
 
 
 FAQ_SEED: list[tuple[str, str]] = [
@@ -119,6 +128,12 @@ ESCALATION_SEED: list[str] = [
     "договор",
     "замер",
     "замерщик",
+    "заказать",
+    "рассчитать точно",
+    "оплатить",
+    "брак",
+    "вернуть деньги",
+    "директор",
 ]
 
 PRODUCT_CLASSES_SEED: list[tuple[str, float]] = [
@@ -233,6 +248,27 @@ class PostgresStorage:
             brand_city=self.get_app_setting("brand_city"),
             timezone=self.get_app_setting("timezone"),
         )
+
+    def get_timezone(self) -> str:
+        return self.get_app_setting("timezone") or "Asia/Irkutsk"
+
+    def get_brand_name(self) -> str:
+        return self.get_app_setting("brand_name") or "АртКухня"
+
+    def get_managers_config(self) -> ManagersConfig:
+        return parse_managers_config(self.get_app_setting(MANAGERS_CONFIG_KEY))
+
+    def set_managers_config(self, config: ManagersConfig) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO app_settings(key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key) DO UPDATE
+                SET value = EXCLUDED.value, updated_at = NOW()
+                """,
+                (MANAGERS_CONFIG_KEY, serialize_managers_config(config)),
+            )
 
     def get_faq_answer(self, text: str) -> str | None:
         normalized = text.lower()
@@ -591,9 +627,227 @@ class PostgresStorage:
 
     def set_funnel_state(self, user_id: int, state: dict[str, Any]) -> None:
         self.add_event(user_id, "funnel_state", state)
+        self._sync_funnel_watch(user_id, state)
 
     def clear_funnel_state(self, user_id: int) -> None:
         self.set_funnel_state(user_id, {})
+        self._remove_funnel_watch(user_id)
+
+    def _sync_funnel_watch(self, user_id: int, state: dict[str, Any]) -> None:
+        stage = str(state.get("stage") or "idle")
+        if stage in WIZARD_STAGES and stage != "done" and funnel_snapshot_has_value(state):
+            lead_id = self._upsert_lead(user_id)
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO funnel_watch(user_id, lead_id, stage, state_json, updated_at, abandoned_escalated_at)
+                    VALUES (%s, %s, %s, %s::jsonb, NOW(), NULL)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        lead_id = EXCLUDED.lead_id,
+                        stage = EXCLUDED.stage,
+                        state_json = EXCLUDED.state_json,
+                        updated_at = NOW(),
+                        abandoned_escalated_at = NULL
+                    """,
+                    (user_id, lead_id, stage, json.dumps(state, ensure_ascii=False)),
+                )
+        else:
+            self._remove_funnel_watch(user_id)
+
+    def _remove_funnel_watch(self, user_id: int) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM funnel_watch WHERE user_id = %s", (user_id,))
+
+    def list_stale_funnel_sessions(self, *, timeout_minutes: int) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT fw.user_id, fw.stage, fw.state_json, l.full_name, l.username
+                FROM funnel_watch fw
+                JOIN leads l ON l.id = fw.lead_id
+                WHERE fw.abandoned_escalated_at IS NULL
+                  AND fw.updated_at <= NOW() - (%s || ' minutes')::interval
+                ORDER BY fw.updated_at ASC
+                LIMIT 50
+                """,
+                (max(1, timeout_minutes),),
+            )
+            rows = cur.fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            payload = row[2]
+            if isinstance(payload, str):
+                state_json = json.loads(payload)
+            else:
+                state_json = dict(payload or {})
+            result.append(
+                {
+                    "user_id": int(row[0]),
+                    "stage": str(row[1]),
+                    "state_json": state_json,
+                    "full_name": row[3],
+                    "username": row[4],
+                }
+            )
+        return result
+
+    def mark_funnel_abandoned_escalated(self, user_id: int) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE funnel_watch SET abandoned_escalated_at = NOW() WHERE user_id = %s",
+                (user_id,),
+            )
+
+    def record_escalation_case(
+        self,
+        *,
+        user_id: int,
+        kind: str,
+        reasons: list[str],
+        summary: str,
+        funnel_snapshot: dict[str, Any] | None = None,
+        order_id: int | None = None,
+        manager_id: str | None = None,
+        manager_name: str | None = None,
+        phone: str | None = None,
+        full_name: str | None = None,
+        username: str | None = None,
+        notified: bool = False,
+    ) -> int:
+        lead_id = self._upsert_lead(user_id)
+        status = "linked_order" if order_id else "new"
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT username, full_name FROM leads WHERE id = %s",
+                (lead_id,),
+            )
+            lead_row = cur.fetchone()
+            if lead_row:
+                username = username or lead_row[0]
+                full_name = full_name or lead_row[1]
+            cur.execute(
+                """
+                INSERT INTO escalation_cases(
+                    lead_id, user_id, kind, reasons, summary, funnel_snapshot, order_id,
+                    manager_id, manager_name, phone, full_name, username, status, notified_at
+                )
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    lead_id,
+                    user_id,
+                    kind,
+                    json.dumps(reasons, ensure_ascii=False),
+                    summary,
+                    json.dumps(funnel_snapshot or {}, ensure_ascii=False),
+                    order_id,
+                    manager_id,
+                    manager_name,
+                    phone,
+                    full_name,
+                    username,
+                    status,
+                    datetime.now(timezone.utc) if notified else None,
+                ),
+            )
+            return int(cur.fetchone()[0])
+
+    def admin_list_escalation_cases(
+        self,
+        *,
+        query: str = "",
+        kind: str = "",
+        has_order: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT id, kind, reasons, summary, order_id, manager_name, phone, full_name, username,
+                   user_id, status, created_at
+            FROM escalation_cases
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if kind:
+            sql += " AND kind = %s"
+            params.append(kind)
+        if has_order == "yes":
+            sql += " AND order_id IS NOT NULL"
+        elif has_order == "no":
+            sql += " AND order_id IS NULL"
+        if query.strip():
+            sql += " AND (summary ILIKE %s OR phone ILIKE %s OR full_name ILIKE %s OR username ILIKE %s OR CAST(user_id AS TEXT) ILIKE %s)"
+            pattern = f"%{query.strip()}%"
+            params.extend([pattern] * 5)
+        sql += " ORDER BY created_at DESC LIMIT %s"
+        params.append(max(1, min(limit, 100)))
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        return [self._escalation_case_row(row) for row in rows]
+
+    def admin_get_escalation_case(self, case_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, kind, reasons, summary, funnel_snapshot, order_id, manager_id, manager_name,
+                       phone, full_name, username, user_id, status, created_at, notified_at
+                FROM escalation_cases
+                WHERE id = %s
+                """,
+                (case_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        reasons = row[2]
+        if isinstance(reasons, str):
+            reasons_list = json.loads(reasons)
+        else:
+            reasons_list = list(reasons or [])
+        snapshot = row[4]
+        if isinstance(snapshot, str):
+            funnel_snapshot = json.loads(snapshot)
+        else:
+            funnel_snapshot = dict(snapshot or {})
+        return {
+            "id": int(row[0]),
+            "kind": str(row[1]),
+            "reasons": reasons_list,
+            "summary": str(row[3] or ""),
+            "funnel_snapshot": funnel_snapshot,
+            "order_id": int(row[5]) if row[5] is not None else None,
+            "manager_id": row[6],
+            "manager_name": row[7],
+            "phone": row[8],
+            "full_name": row[9],
+            "username": row[10],
+            "user_id": int(row[11]),
+            "status": str(row[12]),
+            "created_at": row[13].isoformat() if row[13] else None,
+            "notified_at": row[14].isoformat() if row[14] else None,
+        }
+
+    def _escalation_case_row(self, row: tuple[Any, ...]) -> dict[str, Any]:
+        reasons = row[2]
+        if isinstance(reasons, str):
+            reasons_list = json.loads(reasons)
+        else:
+            reasons_list = list(reasons or [])
+        return {
+            "id": int(row[0]),
+            "kind": str(row[1]),
+            "reasons": reasons_list,
+            "summary": str(row[3] or ""),
+            "order_id": int(row[4]) if row[4] is not None else None,
+            "manager_name": row[5],
+            "phone": row[6],
+            "full_name": row[7],
+            "username": row[8],
+            "user_id": int(row[9]),
+            "status": str(row[10]),
+            "created_at": row[11].isoformat() if row[11] else None,
+        }
 
     def list_catalog(self, category: str) -> list[dict[str, Any]]:
         with self._connect() as conn, conn.cursor() as cur:

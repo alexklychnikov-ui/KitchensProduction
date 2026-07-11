@@ -13,7 +13,8 @@ from aiogram.types import Message
 
 from .admin_wizard import AdminStates, register_admin_handlers
 from .config import Settings
-from .escalation import after_hours_note, evaluate_escalation, should_escalate
+from .escalation import after_hours_note, evaluate_escalation, prepare_escalation_reply, should_escalate
+from .escalation_cases import kind_from_reasons
 from .funnel import (
     FunnelState,
     filter_escalation_keywords,
@@ -35,14 +36,6 @@ logger = logging.getLogger(__name__)
 FALLBACK_RESPONSE = (
     "Могу провести подбор кухни по шагам или ответить на вопрос. "
     "Нажмите «Подобрать кухню» или напишите, что интересует."
-)
-ESCALATION_RESPONSE = (
-    "Передал ваш запрос менеджеру. Скоро с вами свяжется специалист."
-)
-WELCOME_MESSAGE = (
-    "Здравствуйте! Я бот студии «АртКухня» 🙂\n"
-    "Помогу подобрать кухню по шагам — стиль, фасады, столешница, фурнитура — "
-    "дам ориентир по стоимости и запишу на бесплатный замер."
 )
 GREETING_RESPONSE = (
     "Рад вас видеть! Нажмите «Подобрать кухню» — проведу по шагам, "
@@ -109,13 +102,26 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
     def _is_admin(user_id: int) -> bool:
         return bool(settings.admin_ids) and user_id in settings.admin_ids
 
+    def _after_hours_note() -> str | None:
+        config = storage.get_managers_config()
+        return after_hours_note(
+            timezone_name=storage.get_timezone(),
+            office_hours=config.office_hours,
+        )
+
+    def _welcome_text() -> str:
+        config = storage.get_managers_config()
+        brand = storage.get_brand_name()
+        greeting = config.style.greeting.replace("АртКухня", brand)
+        return greeting + (_after_hours_note() or "")
+
     async def _reply(message: Message, user_id: int, text: str) -> None:
         await message.answer(text, parse_mode=None)
         storage.add_event(user_id=user_id, event_type="bot_reply", payload={"text": text[:300]})
 
     async def _reply_customer(message: Message, user_id: int, text: str) -> None:
-        note = after_hours_note()
-        if note:
+        note = _after_hours_note()
+        if note and note not in text:
             text = f"{text}{note}"
         await _reply(message, user_id, text)
 
@@ -140,8 +146,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
         logger.info("Start from user_id=%s chat_id=%s", user_id, message.chat.id)
         storage.add_event(user_id=user_id, event_type="session_start", payload={})
         storage.clear_funnel_state(user_id)
-        note = after_hours_note()
-        welcome = WELCOME_MESSAGE + (note or "")
+        welcome = _welcome_text()
         await message.answer(
             welcome,
             reply_markup=_keyboard_markup(idle_offer_keyboard()),
@@ -249,7 +254,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                     if order_id is not None:
                         summary = f"{summary}\nЗаказ №{order_id}"
                     reasons = funnel_result.escalation_reasons or ["order_created"]
-                    await _send_escalation(
+                    client_text = await _send_escalation(
                         bot=bot,
                         settings=settings,
                         storage=storage,
@@ -257,7 +262,9 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                         user_id=user_id,
                         source_text=summary,
                         reasons=reasons,
+                        order_id=order_id,
                     )
+                    await _reply(message, user_id, client_text)
                 return
             qa_state, qa_result = answer_wizard_question(text, state, **ctx)
             if qa_result.handled:
@@ -271,8 +278,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                 return
 
         if _is_greeting(text) and not should_escalate(text, keywords):
-            note = after_hours_note()
-            reply = GREETING_RESPONSE + (note or "")
+            reply = GREETING_RESPONSE + (_after_hours_note() or "")
             await message.answer(
                 reply,
                 reply_markup=_keyboard_markup(idle_offer_keyboard()),
@@ -306,7 +312,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                     if order_id is not None:
                         summary = f"{summary}\nЗаказ №{order_id}"
                     reasons = manager_result.escalation_reasons or ["manager_requested"]
-                    await _send_escalation(
+                    client_text = await _send_escalation(
                         bot=bot,
                         settings=settings,
                         storage=storage,
@@ -314,11 +320,13 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                         user_id=user_id,
                         source_text=summary,
                         reasons=reasons,
+                        order_id=order_id,
                     )
+                    await _reply(message, user_id, client_text)
                 else:
                     await _reply_customer(message, user_id, manager_result.text)
                 return
-            await _send_escalation(
+            client_text = await _send_escalation(
                 bot=bot,
                 settings=settings,
                 storage=storage,
@@ -327,10 +335,16 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                 source_text=text,
                 reasons=decision.reasons,
             )
-            await _reply_customer(message, user_id, ESCALATION_RESPONSE)
+            await _reply(message, user_id, client_text)
             return
 
-        started = process_idle_message(text, state, **ctx)
+        started = process_idle_message(
+            text,
+            state,
+            catalog_lookup=ctx["catalog_lookup"],
+            public_base_url=ctx.get("public_base_url"),
+            uploads_dir=ctx.get("uploads_dir"),
+        )
         if started is not None:
             new_state, funnel_result = started
             storage.set_funnel_state(user_id, new_state.to_dict())
@@ -355,8 +369,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
 
         faq = _faq_answer(storage, text)
         if faq == FALLBACK_RESPONSE or wants_to_start_order(text):
-            note = after_hours_note()
-            reply = f"{faq}\n\n{idle_offer_text()}" + (note or "")
+            reply = f"{faq}\n\n{idle_offer_text()}" + (_after_hours_note() or "")
             await message.answer(
                 reply,
                 reply_markup=_keyboard_markup(idle_offer_keyboard()),
@@ -394,7 +407,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
             user_message_count=storage.get_session_user_message_count(user_id),
         )
         if decision.should_escalate:
-            await _send_escalation(
+            client_text = await _send_escalation(
                 bot=bot,
                 settings=settings,
                 storage=storage,
@@ -403,7 +416,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                 source_text=text,
                 reasons=decision.reasons,
             )
-            await _reply_customer(message, user_id, ESCALATION_RESPONSE)
+            await _reply(message, user_id, client_text)
 
     @dp.message(F.voice, F.func(_is_private_chat), ~StateFilter(AdminStates))
     async def handle_voice(message: Message) -> None:
@@ -419,7 +432,29 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
 
         try:
             await bot.download(message.voice, destination=temp_path)
-            transcript = await transcribe_voice_file(temp_path, settings=settings)
+            try:
+                transcript = await transcribe_voice_file(temp_path, settings=settings)
+            except Exception:
+                logger.exception("STT API error while handling voice")
+                retry_count = storage.increment_voice_retry_count(user_id)
+                if retry_count <= 1:
+                    await _reply(
+                        message,
+                        user_id,
+                        "Не до конца понял голосовое. Можете коротко повторить голосом или написать текстом?",
+                    )
+                    return
+                client_text = await _send_escalation(
+                    bot=bot,
+                    settings=settings,
+                    storage=storage,
+                    message=message,
+                    user_id=user_id,
+                    source_text="Ошибка STT при обработке голосового",
+                    reasons=["stt_failed"],
+                )
+                await _reply(message, user_id, client_text)
+                return
             if not transcript:
                 retry_count = storage.increment_voice_retry_count(user_id)
                 if retry_count <= 1:
@@ -429,7 +464,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                         "Не до конца понял голосовое. Можете коротко повторить голосом или написать текстом?",
                     )
                     return
-                await _send_escalation(
+                client_text = await _send_escalation(
                     bot=bot,
                     settings=settings,
                     storage=storage,
@@ -438,7 +473,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                     source_text="Нераспознанное голосовое сообщение",
                     reasons=["stt_failed"],
                 )
-                await _reply_customer(message, user_id, ESCALATION_RESPONSE)
+                await _reply(message, user_id, client_text)
                 return
             storage.reset_voice_retry_count(user_id)
 
@@ -459,25 +494,12 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
             logger.exception("Telegram API error while handling voice")
             await _reply(message, user_id, "Ошибка Telegram API при обработке голосового. Попробуйте чуть позже.")
         except Exception:
-            logger.exception("STT error while handling voice")
-            retry_count = storage.increment_voice_retry_count(user_id)
-            if retry_count <= 1:
-                await _reply(
-                    message,
-                    user_id,
-                    "Не до конца понял голосовое. Можете коротко повторить голосом или написать текстом?",
-                )
-            else:
-                await _send_escalation(
-                    bot=bot,
-                    settings=settings,
-                    storage=storage,
-                    message=message,
-                    user_id=user_id,
-                    source_text="Ошибка STT при обработке голосового",
-                    reasons=["stt_failed"],
-                )
-                await _reply(message, user_id, ESCALATION_RESPONSE)
+            logger.exception("Voice handling error")
+            await _reply(
+                message,
+                user_id,
+                "Распознал голос, но не смог обработать запрос. Напишите текстом или нажмите «Подобрать кухню».",
+            )
         finally:
             try:
                 temp_path.unlink(missing_ok=True)
@@ -493,37 +515,66 @@ async def _send_escalation(
     user_id: int,
     source_text: str,
     reasons: list[str],
-) -> None:
+    *,
+    order_id: int | None = None,
+    kind: str | None = None,
+) -> str:
     user = message.from_user
     username = f"@{user.username}" if user and user.username else "-"
     full_name = user.full_name if user else "-"
     resolved_user_id = user.id if user else user_id
 
-    notify_text = (
-        "Эскалация клиента\n"
-        f"Пользователь: {full_name} ({username})\n"
-        f"User ID: {resolved_user_id}\n"
-        f"Причины: {', '.join(reasons)}\n"
-        f"Сообщение: {source_text}"
+    client_text, notify_text, manager = prepare_escalation_reply(
+        config=storage.get_managers_config(),
+        timezone_name=storage.get_timezone(),
+        reasons=reasons,
+        source_text=source_text,
+        full_name=full_name,
+        username=username,
+        user_id=resolved_user_id,
     )
     try:
         await bot.send_message(chat_id=settings.telegram_chat_id, text=notify_text, parse_mode=None)
+        funnel_state = storage.get_funnel_state(resolved_user_id)
+        state = FunnelState.from_dict(funnel_state)
+        storage.record_escalation_case(
+            user_id=resolved_user_id,
+            kind=kind_from_reasons(reasons, explicit=kind),
+            reasons=reasons,
+            summary=source_text,
+            funnel_snapshot=funnel_state or None,
+            order_id=order_id,
+            manager_id=manager.id,
+            manager_name=manager.name,
+            phone=state.phone,
+            full_name=full_name if full_name != "-" else None,
+            username=username if username != "-" else None,
+            notified=True,
+        )
         storage.add_event(
             user_id=resolved_user_id,
             event_type="escalation_sent",
-            payload={"reasons": reasons, "source_text": source_text[:300]},
+            payload={
+                "reasons": reasons,
+                "source_text": source_text[:300],
+                "manager_id": manager.id,
+                "manager_name": manager.name,
+                "order_id": order_id,
+            },
         )
-        asyncio.create_task(_send_sla_followup(bot, settings, notify_text))
+        sla_minutes = storage.get_managers_config().sla_minutes
+        asyncio.create_task(_send_sla_followup(bot, settings, notify_text, sla_minutes))
     except TelegramAPIError:
         logger.exception("Telegram API error while sending escalation")
+    return client_text
 
 
-async def _send_sla_followup(bot: Bot, settings: Settings, notify_text: str) -> None:
-    await asyncio.sleep(15 * 60)
+async def _send_sla_followup(bot: Bot, settings: Settings, notify_text: str, sla_minutes: int) -> None:
+    await asyncio.sleep(sla_minutes * 60)
     try:
         await bot.send_message(
             chat_id=settings.telegram_chat_id,
-            text=f"SLA-проверка 15 минут: проверьте обращение.\n\n{notify_text}",
+            text=f"SLA-проверка {sla_minutes} минут: проверьте обращение.\n\n{notify_text}",
             parse_mode=None,
         )
     except TelegramAPIError:

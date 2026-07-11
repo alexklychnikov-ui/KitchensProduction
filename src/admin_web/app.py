@@ -118,8 +118,8 @@ def create_app(settings: AdminWebSettings | None = None) -> FastAPI:
     @app.put("/api/settings/{key}")
     async def api_set_setting(request: Request, key: str, payload: dict[str, Any]) -> dict[str, str]:
         require_auth(request)
-        if key in {"admin_password_hash", "admin_password_changed"}:
-            raise HTTPException(status_code=403, detail="use /api/change-password")
+        if key in {"admin_password_hash", "admin_password_changed", "managers_config"}:
+            raise HTTPException(status_code=403, detail="use dedicated endpoint")
         value = str(payload.get("value", "")).strip()
         if not value:
             raise HTTPException(status_code=400, detail="value required")
@@ -127,6 +127,37 @@ def create_app(settings: AdminWebSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="unsupported timezone")
         repo.set_setting(key, value)
         return {"key": key, "value": value}
+
+    @app.get("/api/managers")
+    async def api_get_managers(request: Request) -> dict[str, Any]:
+        require_auth(request)
+        return repo.get_managers_config()
+
+    @app.put("/api/managers")
+    async def api_set_managers(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+        require_auth(request)
+        if not isinstance(payload.get("managers"), list) or not payload["managers"]:
+            raise HTTPException(status_code=400, detail="managers required")
+        return repo.set_managers_config(payload)
+
+    @app.get("/api/escalation-cases")
+    async def api_escalation_cases(
+        request: Request,
+        q: str = "",
+        kind: str = "",
+        has_order: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        require_auth(request)
+        return repo.list_escalation_cases(query=q, kind=kind, has_order=has_order, limit=limit)
+
+    @app.get("/api/escalation-cases/{case_id}")
+    async def api_escalation_case(request: Request, case_id: int) -> dict[str, Any]:
+        require_auth(request)
+        item = repo.get_escalation_case(case_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="not found")
+        return item
 
     @app.post("/api/change-password")
     async def api_change_password(request: Request, payload: dict[str, Any]) -> dict[str, bool]:

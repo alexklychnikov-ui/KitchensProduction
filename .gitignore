@@ -10,5 +10,6 @@ Task.md
 myNotes.md
 InputData/
 logs/agent-worklog.txt
+tests/
 delivery/*.dump
 delivery/*.zip

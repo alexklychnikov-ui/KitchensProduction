@@ -32,7 +32,9 @@
           <button class="chip" data-go="catalog">Каталог фото</button>
           <button class="chip" data-go="pricing">Прайс</button>
           <button class="chip" data-go="faq">FAQ</button>
-          <button class="chip" data-go="settings">Часовой пояс</button>
+          <button class="chip" data-go="managers">Менеджеры</button>
+          <button class="chip" data-go="escalation-log">Журнал эскалаций</button>
+          <button class="chip" data-go="settings">Настройки</button>
         </div>
       </div>
     </section>
@@ -62,6 +64,21 @@
       </div>
       <input class="search" id="esc-search" placeholder="Фильтр триггеров..." />
       <div id="esc-list" class="list"></div>
+    </section>
+
+    <section class="panel" data-panel="escalation-log">
+      <div class="panel-head">
+        <h2>Журнал эскалаций</h2>
+      </div>
+      <div class="tabs" id="esc-log-tabs">
+        <button class="tab active" data-filter="">Все</button>
+        <button class="tab" data-filter="order">С заказом</button>
+        <button class="tab" data-filter="no_order">Без заказа</button>
+        <button class="tab" data-filter="abandoned_funnel">Брошенная воронка</button>
+      </div>
+      <input class="search" id="esc-log-search" placeholder="Поиск: телефон, имя, user id..." />
+      <div id="esc-log-list" class="list"></div>
+      <div id="esc-log-detail" class="card hidden"></div>
     </section>
 
     <section class="panel" data-panel="pricing">
@@ -96,11 +113,62 @@
       <div id="catalog-grid" class="catalog-grid"></div>
     </section>
 
+    <section class="panel" data-panel="managers">
+      <div class="panel-head">
+        <h2>Менеджеры</h2>
+      </div>
+      <p class="muted small">Контакты, график и маршрутизация эскалации. Часовой пояс для ответа «вне рабочего времени» — в Настройках.</p>
+      <div class="card stack">
+        <h3>Рабочие часы студии</h3>
+        <div class="grid-2">
+          <label><span>Пн–Пт с</span><input id="office-mon-fri-start" type="number" min="0" max="23" /></label>
+          <label><span>Пн–Пт до</span><input id="office-mon-fri-end" type="number" min="1" max="24" /></label>
+          <label><span>Сб с</span><input id="office-sat-start" type="number" min="0" max="23" /></label>
+          <label><span>Сб до</span><input id="office-sat-end" type="number" min="1" max="24" /></label>
+        </div>
+        <label>
+          <span>SLA дублирования, мин</span>
+          <input id="sla-minutes-input" type="number" min="5" max="120" />
+        </label>
+        <label>
+          <span>Дежурный (жалобы / вне часов)</span>
+          <select id="duty-manager-select"></select>
+        </label>
+      </div>
+      <div id="managers-list" class="list"></div>
+      <div class="card stack">
+        <h3>Фирменный стиль — передача менеджеру</h3>
+        <label><span>Продажи</span><textarea id="style-sales" rows="2"></textarea></label>
+        <label><span>Технические вопросы</span><textarea id="style-technical" rows="2"></textarea></label>
+        <label><span>Жалобы</span><textarea id="style-complaint" rows="2"></textarea></label>
+        <label><span>Неуверенный ответ / STT</span><textarea id="style-uncertain" rows="2"></textarea></label>
+        <p class="muted small">Плейсхолдеры: {name} — имя менеджера, {pronoun} — он/она</p>
+      </div>
+      <button class="btn btn-primary" id="managers-save-btn">Сохранить менеджеров</button>
+    </section>
+
     <section class="panel" data-panel="settings">
       <h2>Настройки</h2>
       <div class="card stack">
+        <button type="button" class="btn btn-primary" data-go="managers">Менеджеры — контакты, Telegram, график</button>
+        <p class="muted small">Настройка эскалации: кто получает заявки, рабочие часы, фразы бота.</p>
+      </div>
+      <div class="card stack">
+        <h3>Брошенная воронка</h3>
+        <label>
+          <span>Эскалация менеджеру через, мин</span>
+          <input id="abandon-timeout-input" type="number" min="10" max="120" value="10" />
+        </label>
+        <p class="muted small">
+          Если клиент начал подбор и не отвечает указанное время — менеджеру уйдёт частичная конфигурация.
+          Запись появится в <button type="button" class="btn btn-ghost btn-sm" data-go="escalation-log">Журнале эскалаций</button>.
+          Минимум 10 минут.
+        </p>
+      </div>
+      <div class="card stack">
         <div class="chip-row">
           <button class="chip" data-go="escalation">Триггеры эскалации</button>
+          <button class="chip" data-go="managers">Менеджеры</button>
         </div>
         <label>
           <span>Часовой пояс</span>
@@ -119,7 +187,7 @@
           <input id="brand-city-input" type="text" />
         </label>
         <button class="btn btn-primary" id="settings-save-btn">Сохранить</button>
-        <p class="muted small">Влияет на отображение в панели и отчёты бота.</p>
+        <p class="muted small">Часовой пояс влияет на ответ бота про доставку и сообщение «вне рабочего времени» при эскалации.</p>
       </div>
       <div class="card stack">
         <h3>Смена пароля</h3>

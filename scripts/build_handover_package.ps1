@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Path $staging -Force | Out-Null
 
 $exclude = @(
     ".venv", "venv", "__pycache__", ".pytest_cache", ".git",
-    ".env", "kitchens-bot.tgz", "InputData", "logs", "myNotes.md", "Task.md"
+    ".env", "kitchens-bot.tgz", "InputData", "logs", "myNotes.md", "Task.md", "tests"
 )
 
 Get-ChildItem -Path $Root -Force | Where-Object {

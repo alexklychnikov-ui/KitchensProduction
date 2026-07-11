@@ -7,6 +7,15 @@ from typing import Any
 
 import psycopg
 
+from src.bot.managers_config import (
+    DEFAULT_MANAGERS_CONFIG,
+    MANAGERS_CONFIG_KEY,
+    ManagersConfig,
+    managers_config_from_dict,
+    managers_config_to_dict,
+    parse_managers_config,
+    serialize_managers_config,
+)
 from src.catalog_media import catalog_media_path
 
 WEB_ADMIN_ACTOR = 0
@@ -131,6 +140,19 @@ class AdminRepository:
                         ensure_password_hash(DEFAULT_ADMIN_PASSWORD),
                     ),
                 )
+            cur.execute(
+                "SELECT value FROM app_settings WHERE key = %s",
+                (MANAGERS_CONFIG_KEY,),
+            )
+            if not cur.fetchone():
+                cur.execute(
+                    """
+                    INSERT INTO app_settings(key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                    """,
+                    (MANAGERS_CONFIG_KEY, serialize_managers_config(DEFAULT_MANAGERS_CONFIG)),
+                )
             for category, code, title, description, price_from, sort_order in CATALOG_SEED:
                 cur.execute(
                     """
@@ -179,6 +201,16 @@ class AdminRepository:
                 "SELECT COUNT(*) FROM orders WHERE created_at >= NOW() - INTERVAL '24 hours'"
             )
             new_orders = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM escalation_cases")
+            escalation_cases_count = int(cur.fetchone()[0])
+            cur.execute(
+                "SELECT COUNT(*) FROM escalation_cases WHERE order_id IS NOT NULL"
+            )
+            escalation_with_order = int(cur.fetchone()[0])
+            cur.execute(
+                "SELECT COUNT(*) FROM escalation_cases WHERE created_at >= NOW() - INTERVAL '24 hours'"
+            )
+            escalation_cases_24h = int(cur.fetchone()[0])
         return {
             "new_leads": new_leads,
             "escalated": escalated,
@@ -187,6 +219,9 @@ class AdminRepository:
             "catalog_count": catalog_count,
             "orders_count": orders_count,
             "new_orders": new_orders,
+            "escalation_cases_count": escalation_cases_count,
+            "escalation_with_order": escalation_with_order,
+            "escalation_cases_24h": escalation_cases_24h,
         }
 
     def list_settings(self) -> dict[str, str]:
@@ -219,6 +254,28 @@ class AdminRepository:
                 (key, value),
             )
             self._audit(cur, "app_settings", key, old_data, {"value": value})
+
+    def get_managers_config(self) -> dict[str, Any]:
+        raw = self.list_settings().get(MANAGERS_CONFIG_KEY)
+        return managers_config_to_dict(parse_managers_config(raw))
+
+    def set_managers_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        config = managers_config_from_dict(payload)
+        serialized = serialize_managers_config(config)
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_settings WHERE key = %s", (MANAGERS_CONFIG_KEY,))
+            old_row = cur.fetchone()
+            old_data = {"value": old_row[0] if old_row else None}
+            cur.execute(
+                """
+                INSERT INTO app_settings(key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                """,
+                (MANAGERS_CONFIG_KEY, serialized),
+            )
+            self._audit(cur, "managers_config", MANAGERS_CONFIG_KEY, old_data, {"value": serialized})
+        return managers_config_to_dict(config)
 
     def list_faq(self, query: str = "") -> list[dict[str, Any]]:
         sql = "SELECT key, answer, is_active FROM faq_items"
@@ -829,3 +886,99 @@ class AdminRepository:
             }
             for source, text, created_at in rows
         ]
+
+    def list_escalation_cases(
+        self,
+        *,
+        query: str = "",
+        kind: str = "",
+        has_order: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        from src.bot.escalation_cases import KIND_LABELS
+
+        sql = """
+            SELECT id, kind, summary, order_id, manager_name, phone, full_name, username,
+                   user_id, status, created_at
+            FROM escalation_cases
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if kind:
+            sql += " AND kind = %s"
+            params.append(kind)
+        if has_order == "yes":
+            sql += " AND order_id IS NOT NULL"
+        elif has_order == "no":
+            sql += " AND order_id IS NULL"
+        if query.strip():
+            sql += " AND (summary ILIKE %s OR phone ILIKE %s OR full_name ILIKE %s OR username ILIKE %s OR CAST(user_id AS TEXT) ILIKE %s)"
+            pattern = f"%{query.strip()}%"
+            params.extend([pattern] * 5)
+        sql += " ORDER BY created_at DESC LIMIT %s"
+        params.append(max(1, min(limit, 100)))
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        return [
+            {
+                "id": int(row[0]),
+                "kind": str(row[1]),
+                "kind_label": KIND_LABELS.get(str(row[1]), str(row[1])),
+                "summary": str(row[2] or ""),
+                "order_id": int(row[3]) if row[3] is not None else None,
+                "manager_name": row[4],
+                "phone": row[5],
+                "full_name": row[6],
+                "username": row[7],
+                "user_id": int(row[8]),
+                "status": str(row[9]),
+                "created_at": row[10].isoformat() if row[10] else None,
+            }
+            for row in rows
+        ]
+
+    def get_escalation_case(self, case_id: int) -> dict[str, Any] | None:
+        from src.bot.escalation_cases import KIND_LABELS
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, kind, reasons, summary, funnel_snapshot, order_id, manager_id, manager_name,
+                       phone, full_name, username, user_id, status, created_at, notified_at
+                FROM escalation_cases
+                WHERE id = %s
+                """,
+                (case_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        reasons = row[2]
+        if isinstance(reasons, str):
+            reasons_list = json.loads(reasons)
+        else:
+            reasons_list = list(reasons or [])
+        snapshot = row[4]
+        if isinstance(snapshot, str):
+            funnel_snapshot = json.loads(snapshot)
+        else:
+            funnel_snapshot = dict(snapshot or {})
+        return {
+            "id": int(row[0]),
+            "kind": str(row[1]),
+            "kind_label": KIND_LABELS.get(str(row[1]), str(row[1])),
+            "reasons": reasons_list,
+            "summary": str(row[3] or ""),
+            "funnel_snapshot": funnel_snapshot,
+            "order_id": int(row[5]) if row[5] is not None else None,
+            "manager_id": row[6],
+            "manager_name": row[7],
+            "phone": row[8],
+            "full_name": row[9],
+            "username": row[10],
+            "user_id": int(row[11]),
+            "status": str(row[12]),
+            "created_at": row[13].isoformat() if row[13] else None,
+            "notified_at": row[14].isoformat() if row[14] else None,
+        }
