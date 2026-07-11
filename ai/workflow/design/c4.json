@@ -1,0 +1,85 @@
+{
+  "version": "1.0.0",
+  "context": {
+    "system": "Windows GUI Mockup Generator (MVP)",
+    "actors": [
+      "User"
+    ],
+    "external_systems": [
+      "ProxyAPI OpenAI-compatible endpoint",
+      "Local project filesystem",
+      "Project README.md"
+    ],
+    "scope": [
+      "Find project images recursively",
+      "User chooses exactly 3 references",
+      "Generate 3 mockups by default",
+      "Review -> approve or regenerate",
+      "Save selected mockups",
+      "Insert selected mockups into README marker section"
+    ]
+  },
+  "containers": [
+    {
+      "name": "Desktop GUI",
+      "tech": "tkinter",
+      "responsibility": [
+        "Project path input",
+        "Scrollable preview list",
+        "Selection of 3 references",
+        "Generated mockups preview",
+        "Approve/regenerate/save actions",
+        "README insert action"
+      ]
+    },
+    {
+      "name": "Application Orchestrator",
+      "tech": "Python service layer",
+      "responsibility": [
+        "Workflow state machine",
+        "Validation and gating",
+        "Delegation to scanner/image/api/readme modules"
+      ]
+    },
+    {
+      "name": "Image Scanner and Thumbnail Service",
+      "tech": "os/pathlib + Pillow",
+      "responsibility": [
+        "Recursive image discovery",
+        "Thumbnail creation and caching",
+        "Input image validation"
+      ]
+    },
+    {
+      "name": "ProxyAPI Client",
+      "tech": "HTTP client",
+      "responsibility": [
+        "Prompt-building request with OPENAI_MODEL",
+        "Images edits request with 3 files and gpt-image-1.5",
+        "Response parsing of data[].b64_json",
+        "Error mapping and retries"
+      ]
+    },
+    {
+      "name": "Storage and README Updater",
+      "tech": "filesystem operations",
+      "responsibility": [
+        "Save outputs to <project>/output/mockups/",
+        "Ensure unique file names",
+        "Update marker section in README.md"
+      ]
+    }
+  ],
+  "components": [
+    "MainWindowController",
+    "WorkflowState",
+    "ProjectScanner",
+    "ReferenceSelectionGuard",
+    "PromptBuilder",
+    "MockupGenerator",
+    "MockupReviewController",
+    "MockupSaver",
+    "ReadmeMarkerUpdater",
+    "ErrorPresenter"
+  ]
+}

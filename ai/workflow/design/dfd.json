@@ -1,0 +1,76 @@
+{
+  "version": "1.0.0",
+  "entities": [
+    "User",
+    "ProxyAPI"
+  ],
+  "processes": [
+    {
+      "id": "P1",
+      "name": "Capture project path and scan files"
+    },
+    {
+      "id": "P2",
+      "name": "Build and show scrollable image previews"
+    },
+    {
+      "id": "P3",
+      "name": "Validate exactly 3 selected references"
+    },
+    {
+      "id": "P4",
+      "name": "Build generation prompt"
+    },
+    {
+      "id": "P5",
+      "name": "Generate mockups via images/edits"
+    },
+    {
+      "id": "P6",
+      "name": "Review and choose approve/regenerate"
+    },
+    {
+      "id": "P7",
+      "name": "Save selected mockups"
+    },
+    {
+      "id": "P8",
+      "name": "Insert selected mockups into README marker section"
+    }
+  ],
+  "data_stores": [
+    {
+      "id": "D1",
+      "name": "Project Files"
+    },
+    {
+      "id": "D2",
+      "name": "Preview Cache (runtime)"
+    },
+    {
+      "id": "D3",
+      "name": "Generated Mockups (<project>/output/mockups/)"
+    },
+    {
+      "id": "D4",
+      "name": "README.md"
+    }
+  ],
+  "flows": [
+    "User -> P1 -> D1",
+    "P1 -> P2 -> D2 -> User",
+    "User -> P3",
+    "P3 -> P4",
+    "P4 -> P5 -> ProxyAPI",
+    "ProxyAPI -> P5 (data[].b64_json)",
+    "P5 -> P6 -> User",
+    "User approve -> P7 -> D3",
+    "User regenerate -> P4",
+    "User insert README -> P8 -> D4"
+  ],
+  "security_notes": [
+    "Never log secrets or base64 payloads",
+    "Validate file paths within selected project root",
+    "Apply file size and decode safety limits"
+  ]
+}

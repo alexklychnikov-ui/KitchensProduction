@@ -1,0 +1,107 @@
+{
+  "version": "1.0.0",
+  "stage": "planning",
+  "test_domains": [
+    "functional",
+    "error_handling",
+    "ux_state",
+    "filesystem",
+    "network"
+  ],
+  "phase_checks": [
+    {
+      "phase_id": "PL-2",
+      "must_pass": [
+        "UI state transitions are deterministic",
+        "Invalid actions are blocked by state guards"
+      ]
+    },
+    {
+      "phase_id": "PL-3",
+      "must_pass": [
+        "Recursive scan is limited to project root",
+        "Exactly three references required for generation"
+      ]
+    },
+    {
+      "phase_id": "PL-4",
+      "must_pass": [
+        "Missing env values fail fast with actionable error",
+        "API error classes are mapped to stable UX messages",
+        "Retry policy applies only to retryable classes"
+      ]
+    },
+    {
+      "phase_id": "PL-5",
+      "must_pass": [
+        "Default generation returns three mockups",
+        "Regenerate replaces current preview set",
+        "Single active generation request is enforced"
+      ]
+    },
+    {
+      "phase_id": "PL-6",
+      "must_pass": [
+        "Selected mockups are saved as PNG to output directory",
+        "README marker section update is idempotent",
+        "Missing marker triggers explicit fail state"
+      ]
+    },
+    {
+      "phase_id": "PL-7",
+      "must_pass": [
+        "Timeout and backoff behaviors are bounded",
+        "No secret leakage in logs and UI errors",
+        "File-size and decode guards prevent unsafe processing"
+      ]
+    },
+    {
+      "phase_id": "PL-8",
+      "must_pass": [
+        "Happy path scan->select3->generate->save->readme passes",
+        "Key negative scenarios pass expected fail behavior",
+        "No blocker or critical defects remain open"
+      ]
+    }
+  ],
+  "test_data_sets": {
+    "prompts": [
+      "short_ru",
+      "long_ru",
+      "mixed_ru_en",
+      "symbol_heavy"
+    ],
+    "images": [
+      "small_png_set",
+      "large_jpeg_set",
+      "corrupted_file_set",
+      "unsupported_format_set"
+    ],
+    "network": [
+      "timeout_simulation",
+      "429_simulation",
+      "500_simulation",
+      "auth_failure_simulation"
+    ],
+    "filesystem": [
+      "read_only_dir",
+      "missing_readme",
+      "missing_marker",
+      "insufficient_disk_space"
+    ]
+  },
+  "reporting_contract": {
+    "required_fields": [
+      "phase_id",
+      "run_id",
+      "environment",
+      "passed",
+      "failed",
+      "blocked",
+      "defect_register",
+      "risk_log",
+      "go_no_go"
+    ],
+    "review_level": "middle_plus"
+  }
+}

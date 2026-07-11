@@ -1,0 +1,36 @@
+{
+  "version": "1.0.0",
+  "mandatory_roles": [
+    "coder",
+    "qa",
+    "devops",
+    "security_expert",
+    "code_simplify_assessor",
+    "efficiency_assessor",
+    "compliance_officer"
+  ],
+  "gates": [
+    {
+      "id": "RG-A",
+      "trigger_after_phase": "PL-4",
+      "purpose": "Integration readiness before full UX finalization",
+      "pass_conditions": [
+        "All mandatory role reports are submitted",
+        "All middle+ findings are resolved or downgraded by consensus",
+        "No unresolved security high risk remains"
+      ],
+      "fail_action": "Return to PL-3 or PL-4 owner and rerun RG-A"
+    },
+    {
+      "id": "RG-B",
+      "trigger_after_phase": "PL-8",
+      "purpose": "Release readiness decision",
+      "pass_conditions": [
+        "All mandatory role reports are pass",
+        "No blocker or critical defects remain open",
+        "Compliance confirms stage-gate process was followed"
+      ],
+      "fail_action": "Return to source phase of failed checks and repeat RG-B"
+    }
+  ]
+}

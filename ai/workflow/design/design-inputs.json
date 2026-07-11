@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "status": "approved_by_user",
+  "answers": {
+    "q1": "A",
+    "q2_gui_library": "A",
+    "q3_default_output_dir": "B",
+    "q4_readme_insert_mode": "A",
+    "q5_default_image_format": "A",
+    "q6_gui_language": "A"
+  },
+  "resolved_decisions": {
+    "gui_library": "tkinter + Pillow",
+    "default_output_dir": "<project>/output/mockups/",
+    "readme_insert_mode": "marker_section",
+    "default_image_format": "png",
+    "gui_language": "ru_only",
+    "image_generation_path": "proxyapi_images_edits_with_3_references"
+  },
+  "env_contract": {
+    "PROXY_API_KEY": "required",
+    "PROXY_BASE_URL": "https://api.proxyapi.ru/openai/v1",
+    "OPENAI_MODEL": "gpt-4o-mini",
+    "IMAGE_MODEL": "gpt-image-1.5"
+  }
+}

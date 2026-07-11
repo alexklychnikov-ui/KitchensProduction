@@ -1,0 +1,51 @@
+{
+  "version": "1.0.0",
+  "participants": [
+    "User",
+    "GUI",
+    "Orchestrator",
+    "Scanner",
+    "PromptBuilder",
+    "ProxyApiClient",
+    "Saver",
+    "ReadmeUpdater"
+  ],
+  "flows": {
+    "happy_path_generate_review_save": [
+      "User enters project path",
+      "GUI asks Orchestrator to scan",
+      "Scanner returns all discovered image paths",
+      "GUI shows scrollable previews",
+      "User selects exactly 3 references",
+      "Orchestrator validates selection",
+      "PromptBuilder creates final prompt",
+      "ProxyApiClient calls text model (OPENAI_MODEL) for prompt shaping",
+      "ProxyApiClient calls /images/edits with model gpt-image-1.5 and image[] x3",
+      "ProxyApiClient returns 3 generated mockups by default",
+      "GUI shows generated previews",
+      "User approves selected mockups",
+      "Saver writes PNG files to <project>/output/mockups/"
+    ],
+    "regenerate_path": [
+      "User clicks regenerate",
+      "Orchestrator reuses selected references",
+      "PromptBuilder rebuilds prompt",
+      "ProxyApiClient repeats generation request",
+      "GUI replaces preview set with newly generated mockups"
+    ],
+    "readme_insert_path": [
+      "User chooses saved mockups for README",
+      "ReadmeUpdater opens <project>/README.md",
+      "ReadmeUpdater finds marker section",
+      "ReadmeUpdater inserts or replaces markdown image links",
+      "GUI confirms update"
+    ],
+    "error_paths": [
+      "Invalid project path -> show validation error",
+      "Less or more than 3 references -> block generation",
+      "Proxy API timeout -> retry with bounded backoff and show status",
+      "Auth/rate errors -> show actionable error without secret leakage",
+      "README marker missing -> show explicit marker error and no silent write"
+    ]
+  }
+}

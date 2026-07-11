@@ -1,0 +1,174 @@
+{
+  "version": "1.0.0",
+  "stage": "planning",
+  "global_gate_rule": "no_pass_no_next_stage",
+  "phases": [
+    {
+      "id": "PL-1",
+      "name": "Execution Baseline",
+      "goal": "Fix MVP boundaries and ownership before implementation",
+      "inputs": [
+        "ai/workflow/design/design-inputs.json",
+        "ai/workflow/design/c4.json",
+        "ai/workflow/stage-policy.json",
+        "ai/subagents/roles.json"
+      ],
+      "actions": [
+        "Confirm immutable decisions for MVP",
+        "Assign owner and reviewer for each next phase",
+        "Lock acceptance criteria and gate checks"
+      ],
+      "checks": [
+        "No conflicts with design inputs",
+        "Each phase has owner and measurable acceptance criteria"
+      ],
+      "expected_result": "Approved execution baseline",
+      "rollback": "Freeze and return to design if conflicts are found"
+    },
+    {
+      "id": "PL-2",
+      "name": "GUI Skeleton and State Orchestrator",
+      "goal": "Build navigable UI skeleton and deterministic state transitions",
+      "inputs": [
+        "ai/workflow/design/c4.json",
+        "ai/workflow/design/sequence.json"
+      ],
+      "actions": [
+        "Define main UI zones and actions",
+        "Define workflow states and transitions",
+        "Guard invalid actions by state"
+      ],
+      "checks": [
+        "All sequence flows are representable",
+        "Invalid actions are blocked by guards"
+      ],
+      "expected_result": "Stable GUI skeleton with controlled state machine",
+      "rollback": "Reduce to minimal finite state set if instability appears"
+    },
+    {
+      "id": "PL-3",
+      "name": "Project Scan and Reference Selection",
+      "goal": "Discover images recursively and validate exactly three references",
+      "inputs": [
+        "ai/workflow/design/dfd.json",
+        "ai/workflow/design/c4.json"
+      ],
+      "actions": [
+        "Implement recursive image discovery within selected project root",
+        "Create preview-ready data stream",
+        "Enforce selection guard exactly 3 references"
+      ],
+      "checks": [
+        "Discovery is root-bounded",
+        "Generate action is blocked unless selection count is 3"
+      ],
+      "expected_result": "Reliable source selection pipeline",
+      "rollback": "Fallback to on-demand preview flow if caching is unstable"
+    },
+    {
+      "id": "PL-4",
+      "name": "ProxyAPI Contract Integration",
+      "goal": "Integrate text prompt shaping and image edits generation contracts",
+      "inputs": [
+        "ai/workflow/design/api-contract.json",
+        "ai/workflow/design/design-inputs.json"
+      ],
+      "actions": [
+        "Validate environment contract before first request",
+        "Implement text prompt shaping request",
+        "Implement images/edits request with three references",
+        "Map API errors to user-safe categories"
+      ],
+      "checks": [
+        "Required env values are validated",
+        "Error taxonomy mapping matches contract",
+        "Retry only for retryable error classes"
+      ],
+      "expected_result": "Contract-compliant generation gateway",
+      "rollback": "Use deterministic local prompt template when text-shaping is unavailable"
+    },
+    {
+      "id": "PL-5",
+      "name": "Generation Review and Regeneration Loop",
+      "goal": "Deliver generate-review-regenerate user cycle",
+      "inputs": [
+        "ai/workflow/design/sequence.json"
+      ],
+      "actions": [
+        "Generate default set of three mockups",
+        "Render generated preview set",
+        "Support regenerate with same selected references"
+      ],
+      "checks": [
+        "Regenerate replaces previous preview set",
+        "Only one active generation request at a time"
+      ],
+      "expected_result": "Usable iterative generation loop",
+      "rollback": "Serialize generation operations by single request lock"
+    },
+    {
+      "id": "PL-6",
+      "name": "Save and README Insert",
+      "goal": "Save selected PNG outputs and update README marker section",
+      "inputs": [
+        "ai/workflow/design/design-inputs.json",
+        "ai/workflow/design/sequence.json"
+      ],
+      "actions": [
+        "Save selected mockups to <project>/output/mockups/",
+        "Ensure deterministic file naming policy",
+        "Update marker section inside README.md"
+      ],
+      "checks": [
+        "Saved files are readable and referenced correctly",
+        "README update is restricted to marker section",
+        "Marker missing produces explicit error"
+      ],
+      "expected_result": "Complete output and documentation insertion pipeline",
+      "rollback": "Create README backup before write and restore on failure"
+    },
+    {
+      "id": "PL-7",
+      "name": "Hardening and Error Paths",
+      "goal": "Close reliability and safety baseline for MVP",
+      "inputs": [
+        "ai/workflow/design/sequence.json",
+        "ai/workflow/design/api-contract.json",
+        "ai/workflow/design/dfd.json"
+      ],
+      "actions": [
+        "Implement bounded timeout and retry behavior",
+        "Implement file-size and decode safety guards",
+        "Ensure logs exclude secrets and base64 payloads"
+      ],
+      "checks": [
+        "Negative paths are deterministic",
+        "No secret leakage in logs and UI errors"
+      ],
+      "expected_result": "Stable behavior under invalid inputs and network faults",
+      "rollback": "Revert to stricter defaults for limits and disable risky optional branches"
+    },
+    {
+      "id": "PL-8",
+      "name": "E2E Acceptance",
+      "goal": "Validate full MVP journey end-to-end",
+      "inputs": [
+        "ai/workflow/design/c4.json",
+        "ai/workflow/design/dfd.json",
+        "ai/workflow/design/sequence.json",
+        "ai/workflow/planning/qa-test-plan.json"
+      ],
+      "actions": [
+        "Run full happy path and key negative paths",
+        "Collect QA and role-based review reports",
+        "Approve release readiness or route back by defect owner"
+      ],
+      "checks": [
+        "All mandatory scenarios pass",
+        "No blocker or critical findings remain open"
+      ],
+      "expected_result": "Release candidate readiness for coding completion",
+      "rollback": "Return to source phase of failed scenario and rerun acceptance"
+    }
+  ]
+}

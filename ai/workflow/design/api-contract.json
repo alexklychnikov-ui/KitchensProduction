@@ -1,0 +1,117 @@
+{
+  "version": "1.0.0",
+  "base_url": "https://api.proxyapi.ru/openai/v1",
+  "authentication": {
+    "type": "bearer",
+    "env": "PROXY_API_KEY"
+  },
+  "contracts": [
+    {
+      "name": "prompt_generation",
+      "purpose": "Build optimized generation prompt",
+      "endpoint": "/chat/completions",
+      "model": "gpt-4o-mini",
+      "request_minimum": {
+        "model": "gpt-4o-mini",
+        "messages": "required"
+      },
+      "response_extract": {
+        "final_prompt": "choices[0].message.content"
+      },
+      "status": "design_decision"
+    },
+    {
+      "name": "mockup_generation",
+      "purpose": "Generate mockups using 3 selected references",
+      "endpoint": "/images/edits",
+      "model": "gpt-image-1.5",
+      "request_type": "multipart/form-data",
+      "request_minimum": {
+        "model": "gpt-image-1.5",
+        "prompt": "required",
+        "image[]": "exactly 3 files"
+      },
+      "optional_request_fields": [
+        "n",
+        "size",
+        "quality",
+        "output_format",
+        "output_compression",
+        "background",
+        "moderation",
+        "input_fidelity"
+      ],
+      "response_extract": {
+        "images_base64": "data[].b64_json",
+        "usage": "usage (if provided)"
+      },
+      "defaults": {
+        "n": 3,
+        "output_format": "png"
+      }
+    }
+  ],
+  "error_taxonomy": [
+    {
+      "class": "auth_error",
+      "http": [
+        401,
+        403
+      ],
+      "retry": false
+    },
+    {
+      "class": "validation_error",
+      "http": [
+        400,
+        422
+      ],
+      "retry": false
+    },
+    {
+      "class": "rate_limit",
+      "http": [
+        429
+      ],
+      "retry": true
+    },
+    {
+      "class": "transient_server",
+      "http": [
+        500,
+        502,
+        503,
+        504
+      ],
+      "retry": true
+    }
+  ],
+  "retry_policy": {
+    "strategy": "exponential_backoff_with_jitter",
+    "max_attempts": 4,
+    "base_delay_seconds": 1,
+    "respect_retry_after_header": true
+  },
+  "timeout_policy": {
+    "connect_timeout_seconds": 10,
+    "read_timeout_seconds_images": 150,
+    "read_timeout_seconds_text": 45,
+    "total_deadline_seconds": 180
+  },
+  "rate_limit_policy": {
+    "single_active_generation_request": true,
+    "queue_backpressure": true
+  },
+  "validation": {
+    "required_env": [
+      "PROXY_API_KEY",
+      "PROXY_BASE_URL",
+      "OPENAI_MODEL"
+    ],
+    "fixed_values": {
+      "PROXY_BASE_URL": "https://api.proxyapi.ru/openai/v1",
+      "OPENAI_MODEL": "gpt-4o-mini",
+      "IMAGE_MODEL": "gpt-image-1.5"
+    }
+  }
+}

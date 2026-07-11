@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#2c1810" />
+  <title>{{ brand }} — Админ</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <button type="button" class="btn btn-ghost btn-sm back-menu hidden" id="back-menu-btn">← Меню</button>
+      <div>
+        <div class="topbar-title">{{ brand }}</div>
+        <div class="topbar-sub">{{ city }} · {{ username }}</div>
+      </div>
+    </div>
+    <form method="post" action="/logout">
+      <button type="submit" class="btn btn-ghost btn-sm">Выйти</button>
+    </form>
+  </header>
+
+  <main class="page" id="app">
+    <section class="panel active" data-panel="overview">
+      <h2>Обзор</h2>
+      <div class="stats-grid" id="stats-grid"></div>
+      <div class="card">
+        <h3>Быстрые действия</h3>
+        <div class="chip-row">
+          <button class="chip" data-go="orders">Заявки</button>
+          <button class="chip" data-go="catalog">Каталог фото</button>
+          <button class="chip" data-go="pricing">Прайс</button>
+          <button class="chip" data-go="faq">FAQ</button>
+          <button class="chip" data-go="settings">Часовой пояс</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="orders">
+      <div class="panel-head">
+        <h2>Заявки</h2>
+      </div>
+      <input class="search" id="orders-search" type="search" name="orders-q" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Поиск: №, телефон, имя, user id..." />
+      <div id="orders-list" class="list"></div>
+      <div id="order-detail" class="card hidden"></div>
+    </section>
+
+    <section class="panel" data-panel="faq">
+      <div class="panel-head">
+        <h2>FAQ</h2>
+        <button class="btn btn-primary btn-sm" id="faq-add-btn">+ Добавить</button>
+      </div>
+      <input class="search" id="faq-search" type="search" name="faq-q" autocomplete="off" placeholder="Поиск по ключу или тексту..." />
+      <div id="faq-list" class="list"></div>
+    </section>
+
+    <section class="panel" data-panel="escalation">
+      <div class="panel-head">
+        <h2>Эскалация</h2>
+        <button class="btn btn-primary btn-sm" id="esc-add-btn">+ Триггер</button>
+      </div>
+      <input class="search" id="esc-search" placeholder="Фильтр триггеров..." />
+      <div id="esc-list" class="list"></div>
+    </section>
+
+    <section class="panel" data-panel="pricing">
+      <h2>Прайс и сборы</h2>
+      <div class="tabs" id="pricing-tabs">
+        <button class="tab active" data-tab="classes">Классы</button>
+        <button class="tab" data-tab="tops">Столешницы</button>
+        <button class="tab" data-tab="fees">Сборы</button>
+      </div>
+      <input class="search" id="pricing-search" placeholder="Поиск..." />
+      <div id="pricing-classes" class="list tab-panel active"></div>
+      <div id="pricing-tops" class="list tab-panel"></div>
+      <div id="pricing-fees" class="list tab-panel"></div>
+    </section>
+
+    <section class="panel" data-panel="catalog">
+      <div class="panel-head">
+        <h2>Каталог</h2>
+        <button class="btn btn-primary btn-sm" id="catalog-add-btn">+ Позиция</button>
+      </div>
+      <div class="tabs" id="catalog-tabs">
+        <button class="tab active" data-cat="style">Стиль</button>
+        <button class="tab" data-cat="facade">Фасады</button>
+        <button class="tab" data-cat="countertop">Столешницы</button>
+        <button class="tab" data-cat="hardware">Фурнитура</button>
+      </div>
+      <input class="search" id="catalog-search" placeholder="Поиск в каталоге..." />
+      <p class="muted small upload-hint">
+        Фото: горизонтальные, объект по центру. Идеально 1200×900 (4:3), минимум 800×600, до 5 МБ.
+        При загрузке автоматически обрежем и подготовим для Telegram.
+      </p>
+      <div id="catalog-grid" class="catalog-grid"></div>
+    </section>
+
+    <section class="panel" data-panel="settings">
+      <h2>Настройки</h2>
+      <div class="card stack">
+        <div class="chip-row">
+          <button class="chip" data-go="escalation">Триггеры эскалации</button>
+        </div>
+        <label>
+          <span>Часовой пояс</span>
+          <select id="timezone-select">
+            {% for tz in timezones %}
+            <option value="{{ tz }}">{{ tz }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Название бренда</span>
+          <input id="brand-name-input" type="text" />
+        </label>
+        <label>
+          <span>Город</span>
+          <input id="brand-city-input" type="text" />
+        </label>
+        <button class="btn btn-primary" id="settings-save-btn">Сохранить</button>
+        <p class="muted small">Влияет на отображение в панели и отчёты бота.</p>
+      </div>
+      <div class="card stack">
+        <h3>Смена пароля</h3>
+        <label>
+          <span>Текущий пароль</span>
+          <input id="pwd-current" type="password" autocomplete="current-password" />
+        </label>
+        <label>
+          <span>Новый пароль</span>
+          <input id="pwd-new" type="password" autocomplete="new-password" />
+        </label>
+        <label>
+          <span>Повторите новый пароль</span>
+          <input id="pwd-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <button class="btn btn-primary" id="password-save-btn">Обновить пароль</button>
+        <p class="muted small">После смены используйте новый пароль для входа.</p>
+      </div>
+      <div class="card">
+        <h3>Журнал изменений</h3>
+        <div id="audit-list" class="list compact"></div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" id="bottom-nav">
+    <button class="nav-btn active" data-panel="overview">Обзор</button>
+    <button class="nav-btn" data-panel="orders">Заявки</button>
+    <button class="nav-btn" data-panel="catalog">Каталог</button>
+    <button class="nav-btn" data-panel="pricing">Прайс</button>
+    <button class="nav-btn" data-panel="settings">Ещё</button>
+  </nav>
+
+  <div class="modal hidden" id="modal">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="modal-title">Редактирование</h3>
+        <button class="btn btn-ghost btn-sm" data-close-modal>✕</button>
+      </div>
+      <form id="modal-form" class="stack"></form>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script>
+    window.ADMIN_BOOT = {
+      timezones: {{ timezones | tojson }},
+      categories: {{ categories | tojson }},
+    };
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
