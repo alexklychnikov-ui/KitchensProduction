@@ -4,6 +4,8 @@ Telegram-бот + веб-админка для студии кухонь на з
 
 **Прод:** [kitchen.alexklyvibe.ru](https://kitchen.alexklyvibe.ru) · бот `@Alex_KichenProduction_bot`
 
+**Передача заказчику:** см. [`HANDOVER.md`](HANDOVER.md) — дамп БД, docker-compose, чеклист приёмки.
+
 ## Возможности
 
 ### Клиент (Telegram)

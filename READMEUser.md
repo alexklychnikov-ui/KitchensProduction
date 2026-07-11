@@ -180,3 +180,4 @@ CATALOG_PUBLIC_BASE_URL
 - Веб: [kitchen.alexklyvibe.ru](https://kitchen.alexklyvibe.ru)
 - VPS: сервисы `kitchens-bot`, `kitchens-admin`, БД PostgreSQL в Docker
 - Техническая документация: `README.md`
+- **Передача проекта:** `HANDOVER.md` + архив `delivery/KitchensProduction-handover.zip`

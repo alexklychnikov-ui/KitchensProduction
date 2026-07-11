@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/opt/kitchens-bot")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 
-load_dotenv("/opt/kitchens-bot/.env")
+load_dotenv(ROOT / ".env")
 
 import psycopg
 
