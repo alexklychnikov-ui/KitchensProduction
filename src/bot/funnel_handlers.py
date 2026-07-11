@@ -28,6 +28,7 @@ from .funnel import (
     carousel_nav_result,
     start_wizard,
     apply_catalog_pick,
+    apply_budget_pick,
     apply_shape_pick,
     confirm_estimate,
 )
@@ -334,7 +335,25 @@ def register_funnel_handlers(
         state = FunnelState.from_dict(storage.get_funnel_state(user_id))
 
         if category == "shape":
-            state, result = apply_shape_pick(state, code, **_step_context(storage, settings))
+            ctx = _pick_context(storage, settings)
+            state, result = apply_shape_pick(
+                state,
+                code,
+                catalog_lookup=storage.list_catalog,
+                pricing_reference=ctx["pricing_reference"],  # type: ignore[arg-type]
+                public_base_url=settings.catalog_public_base_url,
+                uploads_dir=str(settings.catalog_uploads_dir) if settings.catalog_uploads_dir else None,
+            )
+            await _persist_and_send(callback, user_id, state, result)
+            await callback.answer()
+            return
+
+        if category == "budget":
+            product_classes = ctx.get("pricing_reference", {}).get("product_classes", {})  # type: ignore[union-attr]
+            if code not in product_classes:
+                await callback.answer("Класс недоступен", show_alert=True)
+                return
+            state, result = apply_budget_pick(state, code, **ctx)
             await _persist_and_send(callback, user_id, state, result)
             await callback.answer()
             return

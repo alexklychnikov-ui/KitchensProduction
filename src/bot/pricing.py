@@ -5,7 +5,30 @@ from dataclasses import dataclass
 from typing import Any
 
 
-PRICE_INTENT_KEYWORDS = ("цена", "стоимость", "рассчитать", "расчёт", "расчет")
+PRICE_INTENT_KEYWORDS = ("цена", "стоимость", "рассчитать", "расчёт", "расчет", "бюджет")
+
+CLASS_LABELS: dict[str, str] = {
+    "эконом": "Эконом",
+    "стандарт": "Стандарт",
+    "премиум": "Премиум",
+}
+
+CLASS_ORDER: tuple[str, ...] = ("эконом", "стандарт", "премиум")
+
+
+def class_display_label(code: str) -> str:
+    return CLASS_LABELS.get(code, code.capitalize())
+
+
+def sorted_product_classes(product_classes: dict[str, Any]) -> list[tuple[str, float]]:
+    known = [(code, float(product_classes[code])) for code in CLASS_ORDER if code in product_classes]
+    rest = sorted(
+        ((code, float(price)) for code, price in product_classes.items() if code not in CLASS_ORDER),
+        key=lambda item: item[1],
+    )
+    return known + rest
+
+
 
 STYLE_TO_CLASS: dict[str, str] = {
     "эконом": "эконом",
@@ -82,14 +105,21 @@ def build_catalog_estimate(
     hardware_title: str | None,
     pricing_reference: dict[str, Any],
     shape: str | None = None,
+    kitchen_class: str | None = None,
+    hardware_price_pm: float = 0.0,
 ) -> EstimateResult:
+    product_classes = pricing_reference.get("product_classes", {})
+    class_code = kitchen_class or "стандарт"
+    class_pm = float(product_classes.get(class_code, product_classes.get("стандарт", 38000.0)))
     service_fees = pricing_reference.get("service_fees", {})
     shape_factor = SHAPE_MULTIPLIERS.get(shape or "Прямая", 1.0)
     effective_length = length_m * shape_factor
 
-    facades_total = facade_price_pm * effective_length
+    effective_facade_pm = max(class_pm, facade_price_pm)
+    facades_total = effective_facade_pm * effective_length
     countertop_total = countertop_price_pm * effective_length
-    subtotal = facades_total + countertop_total
+    hardware_total = hardware_price_pm * effective_length if hardware_price_pm > 0 else 0.0
+    subtotal = facades_total + countertop_total + hardware_total
 
     assembly_percent = float(service_fees.get("assembly_percent", 0.15))
     assembly_min = float(service_fees.get("assembly_min", 12000.0))
@@ -102,12 +132,26 @@ def build_catalog_estimate(
     total = subtotal + assembly_total + delivery_total
     shape_note = f", планировка «{shape}»" if shape else ""
     style_note = f", стиль «{style_title}»" if style_title else ""
+    class_label = class_display_label(class_code)
+    money = lambda v: f"{int(v):,}".replace(",", " ")
+
+    facade_line = (
+        f"Комплектация «{facade_title or '—'}»: {facades_total:,.0f} ₽ "
+        f"(от {money(effective_facade_pm)} ₽/пог.м)"
+    )
+    if facade_price_pm < class_pm:
+        facade_line += f" — база класса «{class_label}»"
+
+    hardware_line = ""
+    if hardware_total > 0:
+        hardware_line = f"\nФурнитура «{hardware_title or '—'}»: {hardware_total:,.0f} ₽"
 
     result_text = (
-        f"Ориентир{style_note}{shape_note}, {length_m:.1f} м.\n"
-        f"Фасады «{facade_title or '—'}»: {facades_total:,.0f} ₽\n"
-        f"Столешница «{countertop_title or '—'}»: {countertop_total:,.0f} ₽\n"
-        f"Фурнитура «{hardware_title or '—'}»\n"
+        f"Ориентир по бюджету — класс «{class_label}»{style_note}{shape_note}, {length_m:.1f} м.\n"
+        f"База класса: от {money(class_pm)} ₽/пог.м\n"
+        f"{facade_line}\n"
+        f"Столешница «{countertop_title or '—'}»: {countertop_total:,.0f} ₽"
+        f"{hardware_line}\n"
         f"Монтаж: {assembly_total:,.0f} ₽\n"
         f"Доставка (по городу): {delivery_total:,.0f} ₽\n"
         f"Итого ориентировочно: {total:,.0f} ₽"
@@ -115,7 +159,7 @@ def build_catalog_estimate(
     return EstimateResult(
         text=result_text,
         total=total,
-        kitchen_class=facade_title or "стандарт",
+        kitchen_class=class_code,
         length_m=length_m,
     )
 

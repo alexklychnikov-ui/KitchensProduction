@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from .pricing import class_display_label
+
 
 def _fmt_money(value: Any) -> str:
     if value is None:
@@ -51,6 +53,9 @@ def format_order_detail(order: dict[str, Any], dialogs: list[dict[str, Any]] | N
         lines.append(f"Длина: {float(order['length_m']):.1f} м")
     if order.get("shape"):
         lines.append(f"Планировка: {order['shape']}")
+    kitchen_class = order.get("kitchen_class")
+    if kitchen_class:
+        lines.append(f"Класс: {class_display_label(str(kitchen_class))}")
     if order.get("facade_title") or order.get("facade_code"):
         lines.append(f"Фасады: {order.get('facade_title') or order.get('facade_code')}")
     if order.get("countertop_title") or order.get("countertop_code"):

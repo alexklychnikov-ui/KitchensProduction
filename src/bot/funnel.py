@@ -4,7 +4,13 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
-from .pricing import PRICE_INTENT_KEYWORDS, build_catalog_estimate, detect_length
+from .pricing import (
+    PRICE_INTENT_KEYWORDS,
+    build_catalog_estimate,
+    class_display_label,
+    detect_length,
+    sorted_product_classes,
+)
 
 FUNNEL_ABSORBED_KEYWORDS = frozenset({"замер", "замерщик"})
 
@@ -30,7 +36,7 @@ MANAGER_PHONE_PROMPT = (
     "Формат: +7 9XX XXX XX XX (можно с именем: «Иван, +7 964 123 45 67»)"
 )
 
-WIZARD_STAGES = ("style", "length", "shape", "facade", "countertop", "hardware", "estimate", "phone", "done")
+WIZARD_STAGES = ("style", "length", "shape", "budget", "facade", "countertop", "hardware", "estimate", "phone", "done")
 
 CATEGORY_BY_STAGE = {
     "style": "style",
@@ -40,13 +46,14 @@ CATEGORY_BY_STAGE = {
 }
 
 STAGE_PROMPTS = {
-    "style": "Шаг 1 из 7. Выберите стиль кухни:",
-    "length": "Шаг 2 из 7. Напишите длину кухни по стене в метрах (например: 3.2 м):",
-    "shape": "Шаг 3 из 7. Какая планировка?",
-    "facade": "Шаг 4 из 7. Выберите фасады:",
-    "countertop": "Шаг 5 из 7. Выберите столешницу:",
-    "hardware": "Шаг 6 из 7. Выберите фурнитуру:",
-    "estimate": "Шаг 7 из 7. Ориентир по вашей комплектации:",
+    "style": "Шаг 1 из 8. Выберите стиль кухни:",
+    "length": "Шаг 2 из 8. Напишите длину кухни по стене в метрах (например: 3.2 м):",
+    "shape": "Шаг 3 из 8. Какая планировка?",
+    "budget": "Шаг 4 из 8. Какой ориентир по бюджету? (класс комплектации из прайса)",
+    "facade": "Шаг 5 из 8. Выберите фасады:",
+    "countertop": "Шаг 6 из 8. Выберите столешницу:",
+    "hardware": "Шаг 7 из 8. Выберите фурнитуру:",
+    "estimate": "Шаг 8 из 8. Ориентир по вашей комплектации:",
     "phone": "Оставьте номер телефона — менеджер свяжется и согласует замер:",
 }
 
@@ -63,17 +70,19 @@ STAGE_ORDER: tuple[tuple[str, str, int], ...] = (
     ("style", "стиль кухни", 1),
     ("length", "длину по стене", 2),
     ("shape", "планировку", 3),
-    ("facade", "фасады", 4),
-    ("countertop", "столешницу", 5),
-    ("hardware", "фурнитуру", 6),
-    ("estimate", "ориентир по бюджету", 7),
-    ("phone", "контакт для замера", 8),
+    ("budget", "ориентир по бюджету", 4),
+    ("facade", "фасады", 5),
+    ("countertop", "столешницу", 6),
+    ("hardware", "фурнитуру", 7),
+    ("estimate", "итоговый расчёт", 8),
+    ("phone", "контакт для замера", 9),
 )
 
 STAGE_ACTION_HINTS: dict[str, str] = {
     "style": "Листайте фото ◀️ ▶️ и нажмите «Выбрать» под понравившимся стилем.",
     "length": "Напишите длину кухни числом, например: 3 или 3.5 (можно с «м»).",
     "shape": "Нажмите кнопку с нужной планировкой ниже.",
+    "budget": "Выберите класс — цены из вкладки Прайс → Классы (₽/пог.м).",
     "facade": "Листайте варианты фасадов и нажмите «Выбрать» — цена за погонный метр в подписи.",
     "countertop": "Листайте столешницы ◀️ ▶️ и выберите подходящую по цене и виду.",
     "hardware": "Выберите фурнитуру — от неё зависит ресурс и плавность хода ящиков.",
@@ -112,6 +121,9 @@ TOPIC_TO_STAGE: dict[str, str] = {
     "планир": "shape",
     "погон": "length",
     "замер": "phone",
+    "бюджет": "budget",
+    "класс": "budget",
+    "ценов": "budget",
 }
 
 
@@ -128,6 +140,7 @@ class FunnelState:
     hardware_title: str | None = None
     length_m: float | None = None
     shape: str | None = None
+    kitchen_class: str | None = None
     phone: str | None = None
     name: str | None = None
     estimate_total: int | None = None
@@ -307,8 +320,14 @@ def carousel_nav_result(
 def build_carousel_header(state: FunnelState, category: str) -> str:
     if category == "style":
         return STAGE_PROMPTS["style"]
-    if category == "facade" and state.shape:
-        return f"Планировка: {state.shape} ✓\n\n{STAGE_PROMPTS['facade']}"
+    if category == "facade":
+        prefix = ""
+        if state.shape:
+            prefix = f"Планировка: {state.shape} ✓\n"
+        if state.kitchen_class:
+            label = class_display_label(state.kitchen_class)
+            prefix += f"Класс: {label} ✓\n"
+        return f"{prefix}\n{STAGE_PROMPTS['facade']}".strip()
     if category == "countertop" and state.facade_title:
         return f"Фасады: {state.facade_title} ✓\n\n{STAGE_PROMPTS['countertop']}"
     if category == "hardware" and state.countertop_title:
@@ -323,6 +342,19 @@ def _shape_callback(code: str) -> str:
 
 def _shape_keyboard() -> list[list[tuple[str, str]]]:
     return [[(label, _shape_callback(code))] for code, label in SHAPE_OPTIONS]
+
+
+def _budget_callback(code: str) -> str:
+    return f"fn:pick:budget:{code}"
+
+
+def _budget_keyboard(pricing_reference: dict[str, Any]) -> list[list[tuple[str, str]]]:
+    product_classes = pricing_reference.get("product_classes", {})
+    rows: list[list[tuple[str, str]]] = []
+    for code, price in sorted_product_classes(product_classes):
+        label = class_display_label(code)
+        rows.append([(f"{label} — от {_format_money(price)} ₽/пог.м", _budget_callback(code))])
+    return rows or [[("Стандарт", _budget_callback("стандарт"))]]
 
 
 def _estimate_keyboard() -> list[list[tuple[str, str]]]:
@@ -365,12 +397,15 @@ def _step_result_for_stage(
     prefix: str = "",
     public_base_url: str | None = None,
     uploads_dir: str | None = None,
+    pricing_reference: dict[str, Any] | None = None,
 ) -> FunnelResult:
     text = f"{prefix}{STAGE_PROMPTS[stage]}" if prefix else STAGE_PROMPTS[stage]
     keyboard: list[list[tuple[str, str]]] | None = None
 
     if stage == "shape":
         keyboard = _shape_keyboard()
+    elif stage == "budget":
+        keyboard = _budget_keyboard(pricing_reference or {})
     elif stage == "estimate":
         keyboard = _estimate_keyboard()
     elif stage in CATEGORY_BY_STAGE:
@@ -462,6 +497,8 @@ def apply_catalog_pick(
             countertop_title=state.countertop_title,
             hardware_title=title,
             shape=state.shape,
+            kitchen_class=state.kitchen_class,
+            hardware_price_pm=_hardware_price(state, catalog_lookup),
             pricing_reference=pricing_reference,
         )
         state.estimate_total = int(estimate.total)
@@ -488,23 +525,69 @@ def _countertop_price(state: FunnelState, catalog_lookup: Callable[[str], list[d
     return float(item["price_from"]) if item and item.get("price_from") is not None else 14000.0
 
 
+def _countertop_price(state: FunnelState, catalog_lookup: Callable[[str], list[dict[str, Any]]]) -> float:
+    if not state.countertop_code:
+        return 14000.0
+    item = next((i for i in catalog_lookup("countertop") if i["code"] == state.countertop_code), None)
+    return float(item["price_from"]) if item and item.get("price_from") is not None else 14000.0
+
+
+def _hardware_price(state: FunnelState, catalog_lookup: Callable[[str], list[dict[str, Any]]]) -> float:
+    if not state.hardware_code:
+        return 0.0
+    item = next((i for i in catalog_lookup("hardware") if i["code"] == state.hardware_code), None)
+    if item and item.get("price_from") is not None:
+        return max(0.0, float(item["price_from"]))
+    return 0.0
+
+
 def apply_shape_pick(
     state: FunnelState,
     shape_code: str,
     *,
     catalog_lookup: Callable[[str], list[dict[str, Any]]],
+    pricing_reference: dict[str, Any] | None = None,
     public_base_url: str | None = None,
     uploads_dir: str | None = None,
 ) -> tuple[FunnelState, FunnelResult]:
     label = SHAPE_LABELS.get(shape_code, shape_code)
     state.shape = label
-    state.stage = "facade"
+    state.stage = "budget"
     result = _step_result_for_stage(
-        "facade",
+        "budget",
         catalog_lookup=catalog_lookup,
         prefix=f"Планировка: {label} ✓\n\n",
         public_base_url=public_base_url,
         uploads_dir=uploads_dir,
+        pricing_reference=pricing_reference or {},
+    )
+    return state, result
+
+
+def apply_budget_pick(
+    state: FunnelState,
+    class_code: str,
+    *,
+    catalog_lookup: Callable[[str], list[dict[str, Any]]],
+    pricing_reference: dict[str, Any],
+    public_base_url: str | None = None,
+    uploads_dir: str | None = None,
+) -> tuple[FunnelState, FunnelResult]:
+    product_classes = pricing_reference.get("product_classes", {})
+    if class_code not in product_classes:
+        class_code = "стандарт"
+    state.kitchen_class = class_code
+    state.stage = "facade"
+    label = class_display_label(class_code)
+    price = float(product_classes[class_code])
+    prefix = f"Планировка: {state.shape} ✓\nКласс: {label} (от {_format_money(price)} ₽/пог.м) ✓\n\n"
+    result = _step_result_for_stage(
+        "facade",
+        catalog_lookup=catalog_lookup,
+        prefix=prefix,
+        public_base_url=public_base_url,
+        uploads_dir=uploads_dir,
+        pricing_reference=pricing_reference,
     )
     return state, result
 
@@ -535,6 +618,7 @@ def _build_order_payload(state: FunnelState) -> dict[str, Any]:
         "facade_title": state.facade_title,
         "countertop_title": state.countertop_title,
         "hardware_title": state.hardware_title,
+        "kitchen_class": state.kitchen_class,
     }
 
 
@@ -582,6 +666,8 @@ def _build_escalation_summary(
         lines.append(f"Длина: {state.length_m:.1f} м")
     if state.shape:
         lines.append(f"Планировка: {state.shape}")
+    if state.kitchen_class:
+        lines.append(f"Класс: {class_display_label(state.kitchen_class)}")
     if state.facade_title:
         lines.append(f"Фасады: {state.facade_title}")
     if state.countertop_title:
@@ -615,6 +701,8 @@ def _progress_summary(state: FunnelState) -> str:
         parts.append(f"длина: {state.length_m:.1f} м")
     if state.shape:
         parts.append(f"планировка: {state.shape}")
+    if state.kitchen_class:
+        parts.append(f"класс: {class_display_label(state.kitchen_class)}")
     if state.facade_title:
         parts.append(f"фасады: {state.facade_title}")
     if state.countertop_title:
@@ -709,7 +797,7 @@ def answer_wizard_question(
     if not lines:
         if _looks_like_question(text):
             lines.append(
-                f"Сейчас шаг {current_step} из 7 — {current_title}. "
+                f"Сейчас шаг {current_step} из 8 — {current_title}. "
                 f"Подбор идёт по шагам, я рядом и подскажу."
             )
         else:
@@ -726,6 +814,11 @@ def answer_wizard_question(
         prefix = f"{answer}\n\n"
         if state.stage == "facade" and state.shape:
             prefix = f"Планировка: {state.shape} ✓\n\n{prefix}"
+            if state.kitchen_class:
+                prefix = (
+                    f"Планировка: {state.shape} ✓\n"
+                    f"Класс: {class_display_label(state.kitchen_class)} ✓\n\n{answer}\n\n"
+                )
         elif state.stage == "countertop" and state.facade_title:
             prefix = f"Фасады: {state.facade_title} ✓\n\n{prefix}"
         elif state.stage == "hardware" and state.countertop_title:
@@ -737,6 +830,8 @@ def answer_wizard_question(
     keyboard: list[list[tuple[str, str]]] | None = None
     if state.stage == "shape":
         keyboard = _shape_keyboard()
+    elif state.stage == "budget":
+        keyboard = _budget_keyboard(pricing_reference)
     elif state.stage == "estimate":
         keyboard = _estimate_keyboard()
 
@@ -869,7 +964,10 @@ def process_idle_message(
 
 
 def idle_offer_text() -> str:
-    return "Могу провести по шагам: стиль → фасады → столешница → фурнитура → ориентир и замер."
+    return (
+        "Могу провести по шагам: стиль → длина → планировка → бюджет → "
+        "фасады → столешница → фурнитура → ориентир и замер."
+    )
 
 
 def idle_offer_keyboard() -> list[list[tuple[str, str]]]:
