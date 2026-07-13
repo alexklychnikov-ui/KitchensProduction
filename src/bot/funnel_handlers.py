@@ -239,6 +239,13 @@ def register_funnel_handlers(
         *,
         edit_carousel: bool = False,
     ) -> None:
+        if callback_or_message.from_user:
+            user = callback_or_message.from_user
+            storage.ensure_lead_profile(
+                user_id,
+                full_name=user.full_name,
+                username=user.username,
+            )
         if result.progress_made or result.handled:
             storage.set_funnel_state(user_id, state.to_dict())
         message = callback_or_message.message if isinstance(callback_or_message, CallbackQuery) else callback_or_message
@@ -305,6 +312,7 @@ def register_funnel_handlers(
             catalog_lookup=storage.list_catalog,
             header=header,
         )
+        state.carousel_index = result.carousel_index
         await _persist_and_send(callback, user_id, state, result, edit_carousel=True)
         await callback.answer()
 

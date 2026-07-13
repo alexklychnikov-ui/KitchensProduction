@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from .catalog_seed import CATALOG_SEED
 from .escalation_cases import funnel_snapshot_has_value
-from .faq_content import build_delivery_faq_answer, resolve_brand_city
+from .faq_content import build_delivery_faq_answer, resolve_faq_item, resolve_brand_city
 from .funnel import WIZARD_STAGES
 from .managers_config import DEFAULT_MANAGERS_CONFIG, ManagersConfig
 
@@ -36,7 +36,15 @@ def _seed_catalog_items() -> list[dict[str, Any]]:
 class StorageBackend(Protocol):
     def add_event(self, user_id: int, event_type: str, payload: dict[str, Any]) -> None: ...
     def add_request(self, user_id: int, text: str, source: str) -> None: ...
+    def ensure_lead_profile(
+        self,
+        user_id: int,
+        *,
+        full_name: str | None = None,
+        username: str | None = None,
+    ) -> None: ...
     def get_faq_answer(self, text: str) -> str | None: ...
+    def get_faq_match(self, text: str) -> tuple[str, str] | None: ...
     def get_escalation_keywords(self) -> list[str]: ...
     def get_pricing_reference(self) -> dict[str, Any]: ...
     def get_user_message_count(self, user_id: int) -> int: ...
@@ -166,6 +174,23 @@ class InMemoryStorage:
     funnel_watch: dict[int, dict[str, Any]] = field(default_factory=dict)
     escalation_cases: list[dict[str, Any]] = field(default_factory=list)
     _next_escalation_id: int = 1
+    lead_profiles: dict[int, dict[str, str | None]] = field(default_factory=dict)
+
+    def ensure_lead_profile(
+        self,
+        user_id: int,
+        *,
+        full_name: str | None = None,
+        username: str | None = None,
+    ) -> None:
+        profile = self.lead_profiles.setdefault(user_id, {"full_name": None, "username": None})
+        if full_name and full_name.strip():
+            profile["full_name"] = full_name.strip()
+        if username and username.strip():
+            profile["username"] = username.strip().lstrip("@")
+        if user_id in self.funnel_watch:
+            self.funnel_watch[user_id]["full_name"] = profile.get("full_name")
+            self.funnel_watch[user_id]["username"] = profile.get("username")
 
     def add_event(self, user_id: int, event_type: str, payload: dict[str, Any]) -> None:
         event = {
@@ -186,17 +211,19 @@ class InMemoryStorage:
         with self._lock:
             self.requests.setdefault(user_id, []).append(item)
 
+    def get_faq_match(self, text: str) -> tuple[str, str] | None:
+        items = [(key, value) for key, value in self.faq_responses.items()]
+
+        def delivery_answer() -> str:
+            city = resolve_brand_city(brand_city=self.brand_city, timezone=self.timezone)
+            fees = self.get_pricing_reference().get("service_fees", {})
+            return build_delivery_faq_answer(city=city, service_fees=fees)
+
+        return resolve_faq_item(text, items, special_answers={"доставка": delivery_answer})
+
     def get_faq_answer(self, text: str) -> str | None:
-        normalized = text.lower()
-        for key, response in self.faq_responses.items():
-            if key not in normalized:
-                continue
-            if key == "доставка":
-                city = resolve_brand_city(brand_city=self.brand_city, timezone=self.timezone)
-                fees = self.get_pricing_reference().get("service_fees", {})
-                return build_delivery_faq_answer(city=city, service_fees=fees)
-            return response
-        return None
+        match = self.get_faq_match(text)
+        return match[1] if match else None
 
     def get_escalation_keywords(self) -> list[str]:
         return [keyword for keyword, active in self.escalation_rules.items() if active]

@@ -12,11 +12,12 @@ from aiogram.enums import ChatType
 from aiogram.types import Message
 
 from .admin_wizard import AdminStates, register_admin_handlers
-from .config import Settings
+from .faq_content import IDLE_AFTER_FAQ_HINT, format_friendly_faq_reply
 from .escalation import after_hours_note, evaluate_escalation, prepare_escalation_reply, should_escalate
 from .escalation_cases import kind_from_reasons
 from .funnel import (
     FunnelState,
+    MANAGER_INTENT,
     filter_escalation_keywords,
     idle_offer_keyboard,
     idle_offer_text,
@@ -39,7 +40,7 @@ FALLBACK_RESPONSE = (
 )
 GREETING_RESPONSE = (
     "Рад вас видеть! Нажмите «Подобрать кухню» — проведу по шагам, "
-    "или спросите про сроки, материалы и доставку."
+    "или спросите про сроки, материалы, доставку и гарантию."
 )
 
 
@@ -98,6 +99,11 @@ def _faq_answer(storage: StorageBackend, text: str) -> str:
     return answer or FALLBACK_RESPONSE
 
 
+def _wants_manager(text: str) -> bool:
+    normalized = text.lower()
+    return any(token in normalized for token in MANAGER_INTENT)
+
+
 def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: StorageBackend) -> None:
     def _is_admin(user_id: int) -> bool:
         return bool(settings.admin_ids) and user_id in settings.admin_ids
@@ -125,12 +131,23 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
             text = f"{text}{note}"
         await _reply(message, user_id, text)
 
+    async def _reply_with_idle_offer(message: Message, user_id: int, text: str) -> None:
+        note = _after_hours_note()
+        body = f"{text}{note or ''}"
+        await message.answer(
+            body,
+            reply_markup=_keyboard_markup(idle_offer_keyboard()),
+            parse_mode=None,
+        )
+        storage.add_event(user_id=user_id, event_type="bot_reply", payload={"text": body[:300]})
+
     def _funnel_context() -> dict[str, object]:
         uploads_dir = str(settings.catalog_uploads_dir) if settings.catalog_uploads_dir else None
         return {
             "catalog_lookup": storage.list_catalog,
             "pricing_reference": storage.get_pricing_reference(),
             "faq_lookup": storage.get_faq_answer,
+            "faq_match_lookup": storage.get_faq_match,
             "public_base_url": settings.catalog_public_base_url,
             "uploads_dir": uploads_dir,
         }
@@ -144,6 +161,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
             )
             return
         logger.info("Start from user_id=%s chat_id=%s", user_id, message.chat.id)
+        await _sync_user_profile(message, user_id)
         storage.add_event(user_id=user_id, event_type="session_start", payload={})
         storage.clear_funnel_state(user_id)
         welcome = _welcome_text()
@@ -220,6 +238,16 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
         storage.admin_set_service_fee(user_id, code, value)
         await _reply(message, user_id, f"Fee '{code}' обновлен: {value}")
 
+    async def _sync_user_profile(message: Message, user_id: int) -> None:
+        user = message.from_user
+        if not user:
+            return
+        storage.ensure_lead_profile(
+            user_id,
+            full_name=user.full_name,
+            username=user.username,
+        )
+
     async def _process_customer_message(
         message: Message,
         user_id: int,
@@ -263,8 +291,10 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                         source_text=summary,
                         reasons=reasons,
                         order_id=order_id,
+                        suppress_handoff=bool(funnel_result.text and funnel_result.text.strip()),
                     )
-                    await _reply(message, user_id, client_text)
+                    if client_text.strip():
+                        await _reply(message, user_id, client_text)
                 return
             qa_state, qa_result = answer_wizard_question(text, state, **ctx)
             if qa_result.handled:
@@ -278,6 +308,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                 return
 
         if _is_greeting(text) and not should_escalate(text, keywords):
+            storage.add_event(user_id=user_id, event_type="session_start", payload={"source": "greeting"})
             reply = GREETING_RESPONSE + (_after_hours_note() or "")
             await message.answer(
                 reply,
@@ -287,6 +318,16 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
             storage.add_event(user_id=user_id, event_type="bot_reply", payload={"text": reply[:300]})
             return
 
+        faq_match = None if _wants_manager(text) else storage.get_faq_match(text)
+        if faq_match:
+            faq_key, faq_direct = faq_match
+            body = (
+                f"{format_friendly_faq_reply(faq_direct, faq_key=faq_key)}\n\n"
+                f"{IDLE_AFTER_FAQ_HINT}\n\n{idle_offer_text()}"
+            )
+            await _reply_with_idle_offer(message, user_id, body)
+            return
+
         filtered_keywords = filter_escalation_keywords(keywords, text)
         decision = evaluate_escalation(
             text=text,
@@ -294,6 +335,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
             has_attachments=False,
             bot_message_count=storage.get_session_bot_message_count(user_id),
             user_message_count=storage.get_session_user_message_count(user_id),
+            faq_answerable=storage.get_faq_answer(text) is not None,
         )
         if decision.should_escalate:
             state = FunnelState.from_dict(storage.get_funnel_state(user_id))
@@ -335,7 +377,11 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                 source_text=text,
                 reasons=decision.reasons,
             )
-            await _reply(message, user_id, client_text)
+            await _reply_with_idle_offer(
+                message,
+                user_id,
+                f"{client_text}\n\n{idle_offer_text()}",
+            )
             return
 
         started = process_idle_message(
@@ -364,21 +410,26 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
                 event_type="price_estimate",
                 payload={"input_text": text},
             )
-            await _reply_customer(message, user_id, pricing_result.text)
+            await _reply_with_idle_offer(
+                message,
+                user_id,
+                f"{pricing_result.text}\n\n{idle_offer_text()}",
+            )
+            return
+
+        faq_match = storage.get_faq_match(text)
+        if faq_match:
+            faq_key, faq = faq_match
+            body = (
+                f"{format_friendly_faq_reply(faq, faq_key=faq_key)}\n\n"
+                f"{IDLE_AFTER_FAQ_HINT}\n\n{idle_offer_text()}"
+            )
+            await _reply_with_idle_offer(message, user_id, body)
             return
 
         faq = _faq_answer(storage, text)
-        if faq == FALLBACK_RESPONSE or wants_to_start_order(text):
-            reply = f"{faq}\n\n{idle_offer_text()}" + (_after_hours_note() or "")
-            await message.answer(
-                reply,
-                reply_markup=_keyboard_markup(idle_offer_keyboard()),
-                parse_mode=None,
-            )
-            storage.add_event(user_id=user_id, event_type="bot_reply", payload={"text": reply[:300]})
-            return
-
-        await _reply_customer(message, user_id, faq)
+        reply = f"{faq}\n\n{IDLE_AFTER_FAQ_HINT}\n\n{idle_offer_text()}"
+        await _reply_with_idle_offer(message, user_id, reply)
 
     @dp.message(F.text.func(_is_client_text), F.func(_is_private_chat), ~StateFilter(AdminStates))
     async def handle_text(message: Message) -> None:
@@ -390,6 +441,7 @@ def register_handlers(dp: Dispatcher, bot: Bot, settings: Settings, storage: Sto
         storage.add_request(user_id=user_id, text=text, source="text")
         storage.add_event(user_id=user_id, event_type="message_text", payload={"text": text})
         storage.reset_voice_retry_count(user_id)
+        await _sync_user_profile(message, user_id)
         await _process_customer_message(message, user_id, text)
 
     @dp.message(F.photo | F.document, F.func(_is_private_chat), ~StateFilter(AdminStates))
@@ -518,6 +570,7 @@ async def _send_escalation(
     *,
     order_id: int | None = None,
     kind: str | None = None,
+    suppress_handoff: bool = False,
 ) -> str:
     user = message.from_user
     username = f"@{user.username}" if user and user.username else "-"
@@ -532,6 +585,7 @@ async def _send_escalation(
         full_name=full_name,
         username=username,
         user_id=resolved_user_id,
+        suppress_handoff=suppress_handoff,
     )
     try:
         await bot.send_message(chat_id=settings.telegram_chat_id, text=notify_text, parse_mode=None)

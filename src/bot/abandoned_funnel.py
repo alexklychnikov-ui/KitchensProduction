@@ -14,6 +14,35 @@ from .storage import StorageBackend
 logger = logging.getLogger(__name__)
 
 
+async def _resolve_user_identity(
+    bot: Bot,
+    storage: StorageBackend,
+    user_id: int,
+    row: dict[str, Any],
+) -> tuple[str, str]:
+    full_name = str(row.get("full_name") or "").strip()
+    username = str(row.get("username") or "").strip().lstrip("@")
+
+    if not full_name or not username:
+        try:
+            chat = await bot.get_chat(user_id)
+            if chat.full_name:
+                full_name = full_name or chat.full_name
+            if chat.username:
+                username = username or chat.username
+            storage.ensure_lead_profile(
+                user_id,
+                full_name=chat.full_name,
+                username=chat.username,
+            )
+        except TelegramAPIError:
+            logger.warning("Could not resolve Telegram profile for user_id=%s", user_id)
+
+    display_name = full_name or "—"
+    display_user = f"@{username}" if username else "без @username"
+    return display_name, display_user
+
+
 async def process_abandoned_funnels(bot: Bot, settings: Settings, storage: StorageBackend) -> int:
     timeout = storage.get_managers_config().abandon_timeout_minutes
     stale = storage.list_stale_funnel_sessions(timeout_minutes=timeout)
@@ -26,10 +55,7 @@ async def process_abandoned_funnels(bot: Bot, settings: Settings, storage: Stora
             header="Брошенная воронка — клиент не завершил подбор",
         )
         summary = f"{summary}\nШаг на момент ухода: {state.stage}"
-        full_name = str(row.get("full_name") or "—")
-        username = str(row.get("username") or "-")
-        if username != "-" and not username.startswith("@"):
-            username = f"@{username}"
+        full_name, username = await _resolve_user_identity(bot, storage, user_id, row)
 
         client_text, notify_text, manager = prepare_escalation_reply(
             config=storage.get_managers_config(),
@@ -61,7 +87,7 @@ async def process_abandoned_funnels(bot: Bot, settings: Settings, storage: Stora
             manager_name=manager.name,
             phone=state.phone,
             full_name=full_name if full_name != "—" else None,
-            username=username if username != "-" else None,
+            username=username if username != "без @username" else None,
             notified=True,
         )
         storage.mark_funnel_abandoned_escalated(user_id)

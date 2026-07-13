@@ -111,13 +111,14 @@ def evaluate_escalation(
     bot_message_count: int,
     user_message_count: int,
     stt_failed: bool = False,
+    faq_answerable: bool = False,
 ) -> EscalationDecision:
     reasons: list[str] = []
     if should_escalate(text, keywords):
         reasons.append("keyword_trigger")
     if has_attachments:
         reasons.append("attachments")
-    if bot_message_count >= 10 and user_message_count >= 8:
+    if not faq_answerable and bot_message_count >= 10 and user_message_count >= 8:
         reasons.append("long_dialog")
     if stt_failed:
         reasons.append("stt_failed")
@@ -134,6 +135,7 @@ def prepare_escalation_reply(
     username: str,
     user_id: int,
     now_utc: datetime | None = None,
+    suppress_handoff: bool = False,
 ) -> tuple[str, str, ManagerProfile]:
     utc_now = now_utc or datetime.now(timezone.utc)
     outside_hours = is_outside_working_hours(
@@ -148,16 +150,19 @@ def prepare_escalation_reply(
         outside_hours=outside_hours,
     )
     urgent = "срочно" in source_text.lower()
-    client_text = build_client_escalation_message(
-        manager=manager,
-        config=config,
-        reasons=reasons,
-        source_text=source_text,
-        outside_hours=outside_hours,
-    )
     note = after_hours_note(utc_now, timezone_name=timezone_name, office_hours=config.office_hours)
-    if note:
-        client_text = f"{client_text}{note}"
+    if suppress_handoff or "order_created" in reasons:
+        client_text = note or ""
+    else:
+        client_text = build_client_escalation_message(
+            manager=manager,
+            config=config,
+            reasons=reasons,
+            source_text=source_text,
+            outside_hours=outside_hours,
+        )
+        if note:
+            client_text = f"{client_text}{note}"
     notify_text = build_manager_notification(
         manager=manager,
         full_name=full_name,

@@ -4,6 +4,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
+from .faq_content import QA_CONTINUE_BRIDGE, format_friendly_faq_reply, stems_compatible, tokenize_words
 from .pricing import (
     PRICE_INTENT_KEYWORDS,
     build_catalog_estimate,
@@ -115,7 +116,12 @@ QUESTION_HINTS = (
 TOPIC_TO_STAGE: dict[str, str] = {
     "стил": "style",
     "фасад": "facade",
+    "эмаль": "facade",
+    "мдф": "facade",
+    "шпон": "facade",
     "столешн": "countertop",
+    "кварц": "countertop",
+    "акрил": "countertop",
     "фурнит": "hardware",
     "длин": "length",
     "планир": "shape",
@@ -125,6 +131,29 @@ TOPIC_TO_STAGE: dict[str, str] = {
     "класс": "budget",
     "ценов": "budget",
 }
+
+ALTERNATIVE_QUESTION_MARKERS: tuple[str, ...] = (
+    "а нет",
+    "нет ли",
+    "не нет",
+    "а есть",
+    "есть ли",
+    "можно ли",
+    "другой",
+    "другая",
+    "другие",
+    "другое",
+    "ещё",
+    "еще",
+    "иной",
+    "иная",
+    "под ",
+    "похож",
+    "аналог",
+    "только так",
+    "больше нет",
+    "ничего кроме",
+)
 
 
 @dataclass
@@ -146,6 +175,7 @@ class FunnelState:
     estimate_total: int | None = None
     order_id: int | None = None
     pending_manager: bool = False
+    carousel_index: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> FunnelState:
@@ -428,6 +458,7 @@ def start_wizard(
     uploads_dir: str | None = None,
 ) -> tuple[FunnelState, FunnelResult]:
     state.stage = "style"
+    state.carousel_index = 0
     result = _step_result_for_stage(
         "style",
         catalog_lookup=catalog_lookup,
@@ -449,6 +480,7 @@ def apply_catalog_pick(
     uploads_dir: str | None = None,
 ) -> tuple[FunnelState, FunnelResult]:
     title = str(item["title"])
+    state.carousel_index = 0
     if category == "style":
         state.style_code = code
         state.style_title = title
@@ -516,13 +548,6 @@ def _facade_price(state: FunnelState, catalog_lookup: Callable[[str], list[dict[
         return 38000.0
     item = next((i for i in catalog_lookup("facade") if i["code"] == state.facade_code), None)
     return float(item["price_from"]) if item and item.get("price_from") is not None else 38000.0
-
-
-def _countertop_price(state: FunnelState, catalog_lookup: Callable[[str], list[dict[str, Any]]]) -> float:
-    if not state.countertop_code:
-        return 14000.0
-    item = next((i for i in catalog_lookup("countertop") if i["code"] == state.countertop_code), None)
-    return float(item["price_from"]) if item and item.get("price_from") is not None else 14000.0
 
 
 def _countertop_price(state: FunnelState, catalog_lookup: Callable[[str], list[dict[str, Any]]]) -> float:
@@ -712,11 +737,104 @@ def _progress_summary(state: FunnelState) -> str:
     return ", ".join(parts) if parts else "пока ничего не выбрано"
 
 
+def _asks_about_catalog_alternatives(text: str) -> bool:
+    normalized = text.lower().strip()
+    return any(marker in normalized for marker in ALTERNATIVE_QUESTION_MARKERS)
+
+
+def _topic_in_text(topic: str, text: str) -> bool:
+    normalized = text.lower().strip()
+    if topic in normalized:
+        return True
+    return any(stems_compatible(topic, word) for word in tokenize_words(normalized))
+
+
+def _earlier_catalog_stage_from_question(text: str, state: FunnelState) -> str | None:
+    normalized = text.lower().strip()
+    _, _, current_step = _stage_meta(state.stage)
+    for topic, target_stage in TOPIC_TO_STAGE.items():
+        if not _topic_in_text(topic, normalized):
+            continue
+        if target_stage not in CATEGORY_BY_STAGE:
+            continue
+        _, _, target_step = _stage_meta(target_stage)
+        if target_step < current_step:
+            return target_stage
+    return None
+
+
+def _rewind_to_catalog_step(state: FunnelState, target_stage: str) -> None:
+    if target_stage == "style":
+        state.style_code = None
+        state.style_title = None
+        state.facade_code = None
+        state.facade_title = None
+        state.countertop_code = None
+        state.countertop_title = None
+        state.hardware_code = None
+        state.hardware_title = None
+        state.estimate_total = None
+    elif target_stage == "facade":
+        state.facade_code = None
+        state.facade_title = None
+        state.countertop_code = None
+        state.countertop_title = None
+        state.hardware_code = None
+        state.hardware_title = None
+        state.estimate_total = None
+    elif target_stage == "countertop":
+        state.countertop_code = None
+        state.countertop_title = None
+        state.hardware_code = None
+        state.hardware_title = None
+        state.estimate_total = None
+    elif target_stage == "hardware":
+        state.hardware_code = None
+        state.hardware_title = None
+        state.estimate_total = None
+    state.stage = target_stage
+    state.carousel_index = 0
+
+
+def _mentions_option_outside_catalog(text: str, items: list[dict[str, Any]]) -> bool:
+    if not _looks_like_question(text):
+        return False
+    catalog_words: set[str] = set()
+    for item in items:
+        blob = f"{item.get('title', '')} {item.get('description', '')}"
+        catalog_words.update(tokenize_words(str(blob)))
+    for word in tokenize_words(text):
+        if len(word) < 4:
+            continue
+        if word in catalog_words:
+            continue
+        if any(stems_compatible(word, catalog_word) for catalog_word in catalog_words):
+            continue
+        return True
+    return False
+
+
+def _build_step_catalog_limit_reply(
+    state: FunnelState,
+    items: list[dict[str, Any]],
+) -> str:
+    _, stage_title, _ = _stage_meta(state.stage)
+    titles = [str(item.get("title") or "").strip() for item in items if item.get("title")]
+    if not titles:
+        return f"К сожалению, на шаге «{stage_title}» пока нет позиций в каталоге."
+    bullets = "\n".join(f"• {title}" for title in titles)
+    return (
+        f"К сожалению, на этом шаге можем предложить только {len(titles)} "
+        f"{_variants_word(len(titles))} — листайте ◀️ ▶️ и нажмите «Выбрать»:\n"
+        f"{bullets}"
+    )
+
+
 def _wrong_step_hint(state: FunnelState, text: str) -> str | None:
     normalized = text.lower()
     _, current_title, current_step = _stage_meta(state.stage)
     for topic, target_stage in TOPIC_TO_STAGE.items():
-        if topic not in normalized:
+        if not _topic_in_text(topic, normalized):
             continue
         if target_stage == state.stage:
             continue
@@ -737,6 +855,69 @@ def _wrong_step_hint(state: FunnelState, text: str) -> str | None:
     return None
 
 
+def _step_context_lines(state: FunnelState) -> list[str]:
+    lines: list[str] = []
+    if state.style_title and state.stage != "style":
+        lines.append(f"Стиль: {state.style_title} ✓")
+    if state.length_m is not None and state.stage not in ("style", "length"):
+        lines.append(f"Длина: {state.length_m:.1f} м ✓")
+    if state.shape and state.stage not in ("style", "length", "shape"):
+        lines.append(f"Планировка: {state.shape} ✓")
+    if state.kitchen_class and state.stage not in ("style", "length", "shape", "budget"):
+        lines.append(f"Класс: {class_display_label(state.kitchen_class)} ✓")
+    if state.facade_title and state.stage in ("countertop", "hardware", "estimate"):
+        lines.append(f"Фасады: {state.facade_title} ✓")
+    if state.countertop_title and state.stage in ("hardware", "estimate"):
+        lines.append(f"Столешница: {state.countertop_title} ✓")
+    if state.hardware_title and state.stage == "estimate":
+        lines.append(f"Фурнитура: {state.hardware_title} ✓")
+    return lines
+
+
+def _resume_wizard_step(
+    state: FunnelState,
+    content_lines: list[str],
+    *,
+    catalog_lookup: Callable[[str], list[dict[str, Any]]],
+    pricing_reference: dict[str, Any],
+    public_base_url: str | None = None,
+    uploads_dir: str | None = None,
+) -> FunnelResult:
+    blocks = [block for block in content_lines if block.strip()]
+    blocks.append(QA_CONTINUE_BRIDGE)
+    context = _step_context_lines(state)
+    if context:
+        blocks.append("\n".join(context))
+
+    step_prompt = STAGE_PROMPTS.get(state.stage, "")
+    action = STAGE_ACTION_HINTS.get(state.stage, "")
+    if step_prompt:
+        blocks.append(step_prompt)
+    if action and state.stage != "length":
+        blocks.append(action)
+
+    body = "\n\n".join(blocks)
+
+    if state.stage in CATEGORY_BY_STAGE:
+        category = CATEGORY_BY_STAGE[state.stage]
+        items = catalog_lookup(category)
+        safe_index = max(0, min(state.carousel_index, len(items) - 1)) if items else 0
+        result = build_carousel_result(category, items, safe_index, body)
+        result.text = body
+        result.progress_made = False
+        return result
+
+    keyboard: list[list[tuple[str, str]]] | None = None
+    if state.stage == "shape":
+        keyboard = _shape_keyboard()
+    elif state.stage == "budget":
+        keyboard = _budget_keyboard(pricing_reference)
+    elif state.stage == "estimate":
+        keyboard = _estimate_keyboard()
+
+    return FunnelResult(text=body, keyboard=keyboard, handled=True, progress_made=False)
+
+
 def answer_wizard_question(
     text: str,
     state: FunnelState,
@@ -744,6 +925,7 @@ def answer_wizard_question(
     catalog_lookup: Callable[[str], list[dict[str, Any]]],
     pricing_reference: dict[str, Any],
     faq_lookup: Callable[[str], str | None],
+    faq_match_lookup: Callable[[str], tuple[str, str] | None] | None = None,
     public_base_url: str | None = None,
     uploads_dir: str | None = None,
 ) -> tuple[FunnelState, FunnelResult]:
@@ -753,8 +935,19 @@ def answer_wizard_question(
 
     _, current_title, current_step = _stage_meta(state.stage)
     lines: list[str] = []
+    rewound = False
 
-    wrong_step = _wrong_step_hint(state, text)
+    earlier_stage = _earlier_catalog_stage_from_question(text, state)
+    if earlier_stage:
+        _rewind_to_catalog_step(state, earlier_stage)
+        rewound = True
+        _, current_title, current_step = _stage_meta(state.stage)
+        lines.append(
+            "Выбор фиксируется только кнопкой «Выбрать». "
+            f"Вернул вас к шагу {current_step} — {current_title}."
+        )
+
+    wrong_step = None if rewound else _wrong_step_hint(state, text)
     if wrong_step:
         lines.append(wrong_step)
 
@@ -767,9 +960,14 @@ def answer_wizard_question(
                 "Можно листать ◀️ ▶️ — это весь текущий выбор."
             )
 
-    faq = faq_lookup(text)
-    if faq:
-        lines.append(faq)
+    faq_match = faq_match_lookup(text) if faq_match_lookup else None
+    if not faq_match:
+        answer = faq_lookup(text)
+        if answer:
+            faq_match = ("", answer)
+    if faq_match:
+        faq_key, faq = faq_match
+        lines.append(format_friendly_faq_reply(faq, faq_key=faq_key or None))
 
     if any(key in normalized for key in PRICE_INTENT_KEYWORDS):
         if state.stage == "estimate" and state.estimate_total is not None:
@@ -782,7 +980,7 @@ def answer_wizard_question(
         else:
             lines.append(
                 "Цена складывается из длины, фасадов, столешницы и фурнитуры. "
-                "Пройдём воронку — в конце будет ориентир в рублях."
+                "Пройдём подбор — в конце будет ориентир в рублях."
             )
 
     if state.style_title and "стил" in normalized and state.stage != "style":
@@ -794,48 +992,37 @@ def answer_wizard_question(
     ):
         lines.append(f"Уже выбрано: {progress}.")
 
-    if not lines:
-        if _looks_like_question(text):
-            lines.append(
-                f"Сейчас шаг {current_step} из 8 — {current_title}. "
-                f"Подбор идёт по шагам, я рядом и подскажу."
-            )
-        else:
-            lines.append(
-                f"Продолжаем подбор — шаг {current_step}: {current_title}."
-            )
-
-    action = STAGE_ACTION_HINTS.get(state.stage, STAGE_PROMPTS.get(state.stage, ""))
-    answer = "\n\n".join(lines + [action])
-
+    catalog_limit_added = False
     if state.stage in CATEGORY_BY_STAGE:
         category = CATEGORY_BY_STAGE[state.stage]
         items = catalog_lookup(category)
-        prefix = f"{answer}\n\n"
-        if state.stage == "facade" and state.shape:
-            prefix = f"Планировка: {state.shape} ✓\n\n{prefix}"
-            if state.kitchen_class:
-                prefix = (
-                    f"Планировка: {state.shape} ✓\n"
-                    f"Класс: {class_display_label(state.kitchen_class)} ✓\n\n{answer}\n\n"
-                )
-        elif state.stage == "countertop" and state.facade_title:
-            prefix = f"Фасады: {state.facade_title} ✓\n\n{prefix}"
-        elif state.stage == "hardware" and state.countertop_title:
-            prefix = f"Столешница: {state.countertop_title} ✓\n\n{prefix}"
-        carousel = build_carousel_result(category, items, 0, prefix)
-        carousel.text = answer
-        return state, carousel
+        if items and (
+            rewound
+            or _asks_about_catalog_alternatives(text)
+            or _mentions_option_outside_catalog(text, items)
+        ):
+            lines.append(_build_step_catalog_limit_reply(state, items))
+            catalog_limit_added = True
 
-    keyboard: list[list[tuple[str, str]]] | None = None
-    if state.stage == "shape":
-        keyboard = _shape_keyboard()
-    elif state.stage == "budget":
-        keyboard = _budget_keyboard(pricing_reference)
-    elif state.stage == "estimate":
-        keyboard = _estimate_keyboard()
+    if not lines:
+        if _looks_like_question(text):
+            lines.append(
+                f"Хороший вопрос. Сейчас мы на шаге {current_step} из 8 — {current_title}."
+            )
+        else:
+            lines.append(f"Давайте продолжим подбор — шаг {current_step}: {current_title}.")
 
-    return state, FunnelResult(text=answer, keyboard=keyboard, handled=True)
+    result = _resume_wizard_step(
+        state,
+        lines,
+        catalog_lookup=catalog_lookup,
+        pricing_reference=pricing_reference,
+        public_base_url=public_base_url,
+        uploads_dir=uploads_dir,
+    )
+    if rewound:
+        result.progress_made = True
+    return state, result
 
 
 def _variants_word(count: int) -> str:
@@ -853,6 +1040,7 @@ def process_wizard_text(
     catalog_lookup: Callable[[str], list[dict[str, Any]]],
     pricing_reference: dict[str, Any],
     faq_lookup: Callable[[str], str | None] | None = None,
+    faq_match_lookup: Callable[[str], tuple[str, str] | None] | None = None,
     public_base_url: str | None = None,
     uploads_dir: str | None = None,
 ) -> tuple[FunnelState, FunnelResult]:
@@ -861,8 +1049,22 @@ def process_wizard_text(
     if _contains_any(normalized, MANAGER_INTENT):
         return request_manager_contact(state)
 
+    faq_hit = lookup_faq(text)
+    length_value = detect_length(text, bare_number=True) if state.stage == "length" else None
+    if faq_hit and length_value is None:
+        return answer_wizard_question(
+            text,
+            state,
+            catalog_lookup=catalog_lookup,
+            pricing_reference=pricing_reference,
+            faq_lookup=lookup_faq,
+            faq_match_lookup=faq_match_lookup,
+            public_base_url=public_base_url,
+            uploads_dir=uploads_dir,
+        )
+
     if state.stage == "length":
-        length = detect_length(text, bare_number=True)
+        length = length_value
         if length is not None:
             state.length_m = length
             state.stage = "shape"
@@ -881,6 +1083,7 @@ def process_wizard_text(
                 catalog_lookup=catalog_lookup,
                 pricing_reference=pricing_reference,
                 faq_lookup=lookup_faq,
+            faq_match_lookup=faq_match_lookup,
                 public_base_url=public_base_url,
                 uploads_dir=uploads_dir,
             )
@@ -889,6 +1092,17 @@ def process_wizard_text(
         )
 
     if state.stage == "phone":
+        if _looks_like_question(text) or lookup_faq(text):
+            return answer_wizard_question(
+                text,
+                state,
+                catalog_lookup=catalog_lookup,
+                pricing_reference=pricing_reference,
+                faq_lookup=lookup_faq,
+            faq_match_lookup=faq_match_lookup,
+                public_base_url=public_base_url,
+                uploads_dir=uploads_dir,
+            )
         phone = _detect_phone(text)
         name = _detect_name(text)
         if name:
@@ -940,6 +1154,7 @@ def process_wizard_text(
         catalog_lookup=catalog_lookup,
         pricing_reference=pricing_reference,
         faq_lookup=lookup_faq,
+        faq_match_lookup=faq_match_lookup,
         public_base_url=public_base_url,
         uploads_dir=uploads_dir,
     )

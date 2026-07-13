@@ -8,7 +8,7 @@ from typing import Any
 import psycopg
 
 from .catalog_seed import CATALOG_SEED, CATALOG_TABLE_SQL, ORDERS_TABLE_SQL
-from .faq_content import build_delivery_faq_answer, resolve_brand_city
+from .faq_content import build_delivery_faq_answer, resolve_faq_item, resolve_brand_city
 from .escalation_cases import ESCALATION_CASES_SQL, funnel_snapshot_has_value, kind_from_reasons
 from .funnel import WIZARD_STAGES
 from .managers_config import (
@@ -213,6 +213,30 @@ class PostgresStorage:
             row = cur.fetchone()
             return int(row[0])
 
+    def ensure_lead_profile(
+        self,
+        user_id: int,
+        *,
+        full_name: str | None = None,
+        username: str | None = None,
+    ) -> None:
+        lead_id = self._upsert_lead(user_id)
+        clean_name = (full_name or "").strip() or None
+        clean_user = (username or "").strip().lstrip("@") or None
+        if not clean_name and not clean_user:
+            return
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE leads
+                SET full_name = COALESCE(%s, full_name),
+                    username = COALESCE(%s, username),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (clean_name, clean_user, lead_id),
+            )
+
     def add_request(self, user_id: int, text: str, source: str) -> None:
         lead_id = self._upsert_lead(user_id)
         with self._connect() as conn, conn.cursor() as cur:
@@ -270,8 +294,7 @@ class PostgresStorage:
                 (MANAGERS_CONFIG_KEY, serialize_managers_config(config)),
             )
 
-    def get_faq_answer(self, text: str) -> str | None:
-        normalized = text.lower()
+    def get_faq_match(self, text: str) -> tuple[str, str] | None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
@@ -281,15 +304,17 @@ class PostgresStorage:
                 ORDER BY id ASC
                 """
             )
-            rows = cur.fetchall()
-        for key, answer in rows:
-            if not key or key not in normalized:
-                continue
-            if key == "доставка":
-                fees = self.get_pricing_reference().get("service_fees", {})
-                return build_delivery_faq_answer(city=self.get_brand_city(), service_fees=fees)
-            return str(answer)
-        return None
+            rows = [(str(key), str(answer)) for key, answer in cur.fetchall() if key]
+
+        def delivery_answer() -> str:
+            fees = self.get_pricing_reference().get("service_fees", {})
+            return build_delivery_faq_answer(city=self.get_brand_city(), service_fees=fees)
+
+        return resolve_faq_item(text, rows, special_answers={"доставка": delivery_answer})
+
+    def get_faq_answer(self, text: str) -> str | None:
+        match = self.get_faq_match(text)
+        return match[1] if match else None
 
     def get_escalation_keywords(self) -> list[str]:
         with self._connect() as conn, conn.cursor() as cur:

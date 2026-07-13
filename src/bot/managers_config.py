@@ -128,7 +128,7 @@ DEFAULT_MANAGERS_CONFIG = ManagersConfig(
 )
 
 COMPLAINT_MARKERS = ("жалоб", "претенз", "брак", "вернуть", "директор", "недоволь")
-TECHNICAL_MARKERS = ("монтаж", "гарант", "замерщик", "установк")
+TECHNICAL_MARKERS = ("монтаж", "замерщик", "установк")
 URGENT_MARKERS = ("срочно", "срочная", "urgent")
 
 
@@ -326,13 +326,16 @@ def build_client_escalation_message(
     source_text: str,
     outside_hours: bool,
 ) -> str:
+    if "order_created" in reasons:
+        return ""
+
     route = classify_escalation_route(
         reasons=reasons,
         source_text=source_text,
         outside_hours=outside_hours,
     )
     pronoun = _pronoun_for_name(manager.short_name)
-    if route == "duty" or _text_has_any(source_text, COMPLAINT_MARKERS):
+    if _text_has_any(source_text, COMPLAINT_MARKERS):
         template = config.style.complaint_handoff
     elif route == "technical":
         template = config.style.technical_handoff
