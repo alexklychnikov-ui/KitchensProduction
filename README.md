@@ -2,7 +2,7 @@
 
 
 <!-- MOCKUPS:START -->
-![Mockup](Docs/mockups/generated-2-20260715-095855.png)
+![Mockup](Docs/mockups/mockup-20260818-220648.png)
 <!-- MOCKUPS:END -->
 
 Telegram-бот + веб-админка для студии кухонь на заказ: воронка подбора с фото и ценами, заявки, FAQ, расчёт, STT, эскалация менеджеру.
